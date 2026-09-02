@@ -28,7 +28,7 @@ class HypridleSync:
 
         lines = [
             "# Generated automatically by Mannux Settings",
-            "# https://github.com/tawsif/mannux",
+            "# https://github.com/awtawsif/mannux",
             "",
             "general {",
             f"    lock_cmd = {config.general.lock_cmd}",
