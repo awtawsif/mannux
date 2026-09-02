@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Mannux Settings
+Comment=System & Screen Power Settings for Hyprland
+Exec=mannux
+Icon=com.mannux.Settings
+Terminal=false
+Type=Application
+Categories=Settings;HardwareSettings;DesktopSettings;
+Keywords=Settings;Power;Screen;Idle;Hyprland;Dim;Lock;
+StartupNotify=true

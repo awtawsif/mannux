@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mannux"
+version = "0.1.0"
+description = "Modern GTK4/Libadwaita Settings App for Arch Linux (Hyprland)"
+readme = "README.md"
+authors = [
+    { name = "Mannux Contributors" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "PyGObject>=3.42.0",
+]
+
+[project.scripts]
+mannux = "mannux.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mannux*"]

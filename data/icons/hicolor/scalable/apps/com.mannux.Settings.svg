@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3584e4" />
+      <stop offset="100%" stop-color="#1c71d8" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+  <!-- Background Plate -->
+  <rect x="12" y="12" width="104" height="104" rx="26" fill="url(#bgGrad)" filter="url(#shadow)" />
+  
+  <!-- Monitor / Screen Outline -->
+  <rect x="28" y="28" width="72" height="48" rx="8" fill="#ffffff" fill-opacity="0.9" />
+  <rect x="34" y="34" width="60" height="36" rx="4" fill="#241f31" />
+  
+  <!-- Screen Stand -->
+  <path d="M56 76 L72 76 L76 90 L52 90 Z" fill="#ffffff" fill-opacity="0.9" />
+  <rect x="44" y="88" width="40" height="6" rx="3" fill="#ffffff" fill-opacity="0.9" />
+
+  <!-- Power / Sun Spark inside Screen -->
+  <circle cx="64" cy="52" r="7" fill="#f6d32d" />
+  <path d="M64 40 L64 43 M64 61 L64 64 M52 52 L55 52 M73 52 L76 52 M55.5 43.5 L57.6 45.6 M70.4 58.4 L72.5 60.5 M55.5 60.5 L57.6 58.4 M70.4 45.6 L72.5 43.5" 
+        stroke="#f6d32d" stroke-width="2.5" stroke-linecap="round" />
+</svg>
