@@ -1,27 +1,34 @@
 # Mannux Settings
 
-A modern GTK4 + Libadwaita settings application for Arch Linux running Hyprland.
+A modern, fast GTK4 + Libadwaita settings application and CLI for Arch Linux running Hyprland.
 
 ![Mannux Settings Icon](data/icons/hicolor/scalable/apps/com.mannux.Settings.svg)
 
 ## Features
 
 - **Screen & Power Management**:
-  - Independent profiles for **On Battery** and **Plugged In (AC)**.
-  - Screen Dimming timeout and dim brightness control (`brightnessctl`).
-  - Screen Turn Off (DPMS) timeout (`hyprctl dispatch dpms off/on`).
-  - Automatic Session Lock (`hyprlock` integration).
-  - Automatic Suspend (`systemctl suspend`).
-  - Real-time battery status and power source detection via sysfs.
+  - **Dual Power Profiles**: Separate, customizable timeouts for **On Battery** and **Plugged In (AC Power)**.
+  - **Segmented Profile Switcher**: Interactive switcher with real-time active power state indicator.
+  - **Screen Dimming**: Configurable timeout (presets + custom seconds) and exact brightness percentage control.
+  - **Screen Off (DPMS)**: Display power management timeout (`hyprctl dispatch dpms off/on`).
+  - **Automatic Session Lock**: Configurable idle lock delay (`hyprlock` integration).
+  - **System Suspend**: Auto-suspend timeout (`systemctl suspend`).
   - **Keep Screen Awake (Inhibit Idle)**: Quick toggle for presentation/media viewing mode.
-- **Hypridle Integration**:
-  - Automatic generation and synchronization of `~/.config/hypr/hypridle.conf`.
-  - Automatic backup of existing configuration on first launch.
-  - Seamless live reloading/restarting of the `hypridle` daemon.
-- **Modern Libadwaita UI**:
-  - GNOME HIG compliant interface with native dark/light mode support.
-  - Responsive sidebar navigation and search.
-  - Modular architecture ready for additional modules (Displays, Appearance, Keybindings).
+  - **Live System Detection**: Zero-latency UPower D-Bus event listening with sysfs fallback.
+- **Hypridle Integration & Daemon Supervision**:
+  - Live status badge showing daemon health (🟢 Running with PID/systemd, 🔴 Stopped, ⚠️ Missing).
+  - One-click Start / Restart button.
+  - Automatic synchronization and backup of `~/.config/hypr/hypridle.conf`.
+  - Live syntax-highlighted code preview drawer for `hypridle.conf`.
+- **Scriptable Headless CLI (Waybar / Hotkeys)**:
+  - `mannux --inhibit-toggle` to toggle presentation mode without launching the GUI.
+  - `mannux --status [--json]` for integration with status bars (Waybar, Eww, AGS).
+  - `mannux --sync` for headless config regeneration and daemon reload.
+- **Keyboard Shortcuts**:
+  - `Ctrl + Q`: Quit application
+  - `Ctrl + R`: Reload configuration and restart hypridle daemon
+
+---
 
 ## Installation & Running
 
@@ -35,35 +42,61 @@ cd mannux-linux-x86_64
 ./install.sh
 ```
 
-### Option 2: Quick Launch (Development from Source)
+### Option 2: Run from Source
 ```bash
 ./run.sh
 ```
 
-### Option 3: Install from Source
+### Option 3: Install Locally from Source
 ```bash
 ./install.sh
 ```
 This adds the `mannux` binary to `~/.local/bin/mannux` and registers the desktop application for app launchers (`rofi`, `wofi`, `fuzzel`, etc.).
 
-### Option 4: Pip / Editable Install
-```bash
-pip install -e .
+---
+
+## CLI & Waybar Integration
+
+### Waybar Module Example (`config.jsonc`)
+```jsonc
+"custom/idle_inhibit": {
+    "format": "{}",
+    "return-type": "json",
+    "exec": "mannux --status --json | jq -c '{text: (if .inhibit_idle then \" \" else \" \" end), tooltip: (if .inhibit_idle then \"Keep Awake: ON\" else \"Keep Awake: OFF\" end), class: (if .inhibit_idle then \"active\" else \"inactive\" end)}'",
+    "on-click": "mannux --inhibit-toggle",
+    "interval": 5
+}
 ```
 
-## Creating a Release
-
-The repository includes a GitHub Actions workflow that automatically compiles a standalone binary and publishes a GitHub Release when a version tag is pushed:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
+### Hyprland Keybind Example (`hyprland.conf`)
+```ini
+# Toggle Keep Awake mode
+bind = $mainMod SHIFT, I, exec, mannux --inhibit-toggle
+# Open Mannux Settings
+bind = $mainMod, S, exec, mannux
 ```
+
+---
+
+## Development & Testing
+
+Run unit and integration tests:
+```bash
+pytest -v
+```
+
+Release a new version:
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+---
 
 ## Requirements
-- Python 3.10+ (if running from source)
+- Python 3.10+
 - `python-gobject` (PyGObject)
 - `gtk4` & `libadwaita`
-- `hypridle` (for idle management)
-- `hyprlock` (optional, for screen locking)
-- `brightnessctl` (optional, for screen dimming)
+- `hypridle` (idle management)
+- `hyprlock` (screen locking)
+- `brightnessctl` (screen dimming)

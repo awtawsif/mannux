@@ -4,6 +4,7 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, Gio, GLib
 from mannux.window import MainWindow
+from mannux.cli import create_parser, handle_cli_commands
 
 class MannuxApp(Adw.Application):
     def __init__(self):
@@ -18,6 +19,13 @@ class MannuxApp(Adw.Application):
             win = MainWindow(application=self)
         win.present()
 
-def main():
+def main(args=None):
+    parser = create_parser()
+    parsed_args = parser.parse_args(args)
+
+    ret = handle_cli_commands(parsed_args)
+    if ret is not None:
+        return ret
+
     app = MannuxApp()
-    return app.run(sys.argv)
+    return app.run([])

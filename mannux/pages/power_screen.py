@@ -1,46 +1,21 @@
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Gtk, Adw, GLib, Gio
+from gi.repository import Gtk, Adw, GLib, Pango
 from .base import BasePage
 from mannux.backend.config import ConfigManager, PowerProfileConfig
-from mannux.backend.power import PowerManager
-from mannux.backend.hypridle import HypridleSync
+from mannux.backend.power import PowerManager, PowerStatus
+from mannux.backend.hypridle import HypridleSync, DaemonStatus
+from mannux.backend.logger import log
 
-# Helper for timeouts (label, seconds)
-DIM_TIMEOUT_CHOICES = [
+TIMEOUT_PRESETS = [
     ("30 seconds", 30),
     ("1 minute", 60),
     ("2 minutes", 120),
     ("2.5 minutes (150s)", 150),
     ("3 minutes", 180),
     ("5 minutes", 300),
-    ("10 minutes", 600),
-    ("15 minutes", 900),
-]
-
-DPMS_TIMEOUT_CHOICES = [
-    ("1 minute", 60),
-    ("2 minutes", 120),
-    ("3 minutes", 180),
     ("5.5 minutes (330s)", 330),
-    ("10 minutes", 600),
-    ("15 minutes", 900),
-    ("30 minutes", 1800),
-    ("1 hour", 3600),
-]
-
-LOCK_TIMEOUT_CHOICES = [
-    ("1 minute", 60),
-    ("2 minutes", 120),
-    ("3 minutes", 180),
-    ("5 minutes", 300),
-    ("10 minutes", 600),
-    ("15 minutes", 900),
-    ("30 minutes", 1800),
-]
-
-SUSPEND_TIMEOUT_CHOICES = [
     ("10 minutes", 600),
     ("15 minutes", 900),
     ("30 minutes", 1800),
@@ -48,15 +23,14 @@ SUSPEND_TIMEOUT_CHOICES = [
     ("1 hour", 3600),
     ("2 hours", 7200),
     ("3 hours", 10800),
+    ("Custom...", -1),
 ]
 
-def find_closest_index(choices, val):
-    for i, (_, s) in enumerate(choices):
-        if s == val:
+def find_timeout_index(seconds: int) -> int:
+    for i, (_, s) in enumerate(TIMEOUT_PRESETS[:-1]):
+        if s == seconds:
             return i
-    # Find closest
-    diffs = [abs(s - val) for _, s in choices]
-    return diffs.index(min(diffs))
+    return len(TIMEOUT_PRESETS) - 1 # Custom
 
 class PowerScreenPage(BasePage):
     tag = "power"
@@ -72,156 +46,285 @@ class PowerScreenPage(BasePage):
         self._build_ui()
         self._load_from_config()
 
-        # Timer to refresh power status periodically
-        GLib.timeout_add_seconds(5, self._refresh_power_status)
+        # Listen to power status changes via PowerManager
+        self.power_mgr.add_listener(self._on_power_status_changed)
+
+        # Periodic refresh for daemon status & battery fallback
+        GLib.timeout_add_seconds(3, self._periodic_refresh)
 
     def _build_ui(self):
-        # 1. Power Status & Inhibit Banner
+        # -------------------------------------------------------------
+        # 1. System Status & Quick Toggles
+        # -------------------------------------------------------------
         self.status_group = Adw.PreferencesGroup()
-        self.status_group.set_title("System Power Status")
+        self.status_group.set_title("System Status & Controls")
         self.add(self.status_group)
 
+        # Power Source Row
         self.status_row = Adw.ActionRow()
         self.status_row.set_title("Detecting power source...")
-        self.status_row.set_subtitle("Checking sysfs power supply...")
+        self.status_row.set_subtitle("Connecting to UPower...")
         self.status_row.set_icon_name("battery-charging-symbolic")
         self.status_group.add(self.status_row)
 
-        # Inhibit switch (Presentation Mode)
+        # Hypridle Daemon Row
+        self.daemon_row = Adw.ActionRow()
+        self.daemon_row.set_title("Idle Daemon (hypridle)")
+        self.daemon_row.set_subtitle("Checking status...")
+        self.daemon_row.set_icon_name("system-run-symbolic")
+
+        self.restart_daemon_btn = Gtk.Button(label="Restart")
+        self.restart_daemon_btn.set_icon_name("view-refresh-symbolic")
+        self.restart_daemon_btn.set_valign(Gtk.Align.CENTER)
+        self.restart_daemon_btn.add_css_class("flat")
+        self.restart_daemon_btn.connect("clicked", self._on_restart_daemon_clicked)
+        self.daemon_row.add_suffix(self.restart_daemon_btn)
+        self.status_group.add(self.daemon_row)
+
+        # Keep Screen Awake / Inhibit Switch
         self.inhibit_row = Adw.SwitchRow()
         self.inhibit_row.set_title("Keep Screen Awake (Inhibit Idle)")
-        self.inhibit_row.set_subtitle("Temporarily disable screen dimming, lock, and suspend")
+        self.inhibit_row.set_subtitle("Bypass timeouts for presentation or media viewing")
         self.inhibit_row.set_icon_name("media-playback-start-symbolic")
         self.inhibit_row.connect("notify::active", self._on_inhibit_toggled)
         self.status_group.add(self.inhibit_row)
 
-        # 2. Battery Power Profile Group
-        self.bat_group = Adw.PreferencesGroup()
-        self.bat_group.set_title("On Battery Power")
-        self.bat_group.set_description("Settings applied when your laptop is running on battery")
-        self.add(self.bat_group)
+        # -------------------------------------------------------------
+        # 2. Segmented Profile Switcher (Battery vs AC)
+        # -------------------------------------------------------------
+        self.profiles_group = Adw.PreferencesGroup()
+        self.profiles_group.set_title("Power Profiles")
+        self.profiles_group.set_description("Configure independent idle behaviors based on power source")
+        self.add(self.profiles_group)
 
-        self.bat_widgets = self._create_profile_widgets("battery", self.bat_group)
+        # Switcher & Stack
+        self.profile_stack = Adw.ViewStack()
 
-        # 3. AC Power Profile Group
-        self.ac_group = Adw.PreferencesGroup()
-        self.ac_group.set_title("Plugged In (AC Power)")
-        self.ac_group.set_description("Settings applied when connected to wall power or desktop")
-        self.add(self.ac_group)
+        self.bat_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.bat_widgets = self._create_profile_controls("battery", self.bat_box)
+        self.profile_stack.add_titled_with_icon(self.bat_box, "battery", "On Battery", "battery-symbolic")
 
-        self.ac_widgets = self._create_profile_widgets("ac", self.ac_group)
+        self.ac_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.ac_widgets = self._create_profile_controls("ac", self.ac_box)
+        self.profile_stack.add_titled_with_icon(self.ac_box, "ac", "Plugged In (AC)", "ac-adapter-symbolic")
 
-        # 4. General & Screen Locker Group
+        self.profile_switcher = Adw.ViewSwitcher()
+        self.profile_switcher.set_stack(self.profile_stack)
+        self.profile_switcher.set_policy(Adw.ViewSwitcherPolicy.WIDE)
+        self.profile_switcher.set_halign(Gtk.Align.CENTER)
+        self.profile_switcher.set_margin_bottom(12)
+
+        self.profiles_group.add(self.profile_switcher)
+        self.profiles_group.add(self.profile_stack)
+
+        # -------------------------------------------------------------
+        # 3. Screen Locker & General Commands
+        # -------------------------------------------------------------
         self.gen_group = Adw.PreferencesGroup()
-        self.gen_group.set_title("Screen Lock & Daemon Integration")
-        self.gen_group.set_description("Hypridle and Hyprlock integration commands")
+        self.gen_group.set_title("Hyprland & Screen Locker")
         self.add(self.gen_group)
 
         self.lock_cmd_row = Adw.EntryRow()
         self.lock_cmd_row.set_title("Lock Command")
-        self.lock_cmd_row.connect("changed", self._on_lock_cmd_changed)
+        self.lock_cmd_row.connect("changed", lambda w: self._save_to_config())
         self.gen_group.add(self.lock_cmd_row)
 
         self.auto_sync_row = Adw.SwitchRow()
-        self.auto_sync_row.set_title("Automatic Sync to Hypridle")
-        self.auto_sync_row.set_subtitle("Instantly write ~/.config/hypr/hypridle.conf and reload daemon on change")
-        self.auto_sync_row.connect("notify::active", self._on_auto_sync_toggled)
+        self.auto_sync_row.set_title("Automatic Sync & Reload")
+        self.auto_sync_row.set_subtitle("Instantly write ~/.config/hypr/hypridle.conf on change")
+        self.auto_sync_row.connect("notify::active", lambda w, p: self._save_to_config())
         self.gen_group.add(self.auto_sync_row)
 
-        # Apply button row
         apply_row = Adw.ActionRow()
-        apply_row.set_title("Apply & Restart Hypridle")
-        apply_row.set_subtitle("Manually generate hypridle.conf and restart the background daemon")
-        apply_btn = Gtk.Button(label="Apply Now")
+        apply_row.set_title("Apply Settings Now")
+        apply_row.set_subtitle("Force regenerate hypridle.conf and restart daemon")
+        apply_btn = Gtk.Button(label="Apply & Restart")
         apply_btn.set_valign(Gtk.Align.CENTER)
         apply_btn.add_css_class("suggested-action")
         apply_btn.connect("clicked", self._on_apply_clicked)
         apply_row.add_suffix(apply_btn)
         self.gen_group.add(apply_row)
 
-        self._refresh_power_status()
+        # -------------------------------------------------------------
+        # 4. Config Preview & Reset Drawer
+        # -------------------------------------------------------------
+        self.tools_group = Adw.PreferencesGroup()
+        self.tools_group.set_title("Configuration & Maintenance")
+        self.add(self.tools_group)
 
-    def _create_profile_widgets(self, profile_name: str, group: Adw.PreferencesGroup) -> dict:
+        # Config preview expander
+        self.preview_expander = Adw.ExpanderRow()
+        self.preview_expander.set_title("Preview Generated hypridle.conf")
+        self.preview_expander.set_subtitle("View exact hypridle configuration syntax")
+        self.preview_expander.set_icon_name("text-x-generic-symbolic")
+
+        preview_scroller = Gtk.ScrolledWindow()
+        preview_scroller.set_min_content_height(180)
+        preview_scroller.set_max_content_height(300)
+        preview_scroller.set_margin_top(6)
+        preview_scroller.set_margin_bottom(6)
+        preview_scroller.set_margin_start(12)
+        preview_scroller.set_margin_end(12)
+
+        self.preview_buffer = Gtk.TextBuffer()
+        self.preview_view = Gtk.TextView.new_with_buffer(self.preview_buffer)
+        self.preview_view.set_editable(False)
+        self.preview_view.set_cursor_visible(False)
+        self.preview_view.set_monospace(True)
+        self.preview_view.add_css_class("card")
+        preview_scroller.set_child(self.preview_view)
+
+        self.preview_expander.add_row(preview_scroller)
+        self.tools_group.add(self.preview_expander)
+
+        # Reset button
+        reset_row = Adw.ActionRow()
+        reset_row.set_title("Reset Settings")
+        reset_row.set_subtitle("Restore factory recommended defaults")
+        reset_btn = Gtk.Button(label="Reset Defaults")
+        reset_btn.set_valign(Gtk.Align.CENTER)
+        reset_btn.add_css_class("destructive-action")
+        reset_btn.connect("clicked", self._on_reset_clicked)
+        reset_row.add_suffix(reset_btn)
+        self.tools_group.add(reset_row)
+
+        # Initial updates
+        self._update_power_ui(self.power_mgr.get_status())
+        self._update_daemon_status()
+        self._update_preview()
+
+    def _create_profile_controls(self, name: str, container: Gtk.Box) -> dict:
         w = {}
+        group = Adw.PreferencesGroup()
+        container.append(group)
 
-        # Dim Row
+        # 1. Dim Screen
         w["dim_switch"] = Adw.SwitchRow()
         w["dim_switch"].set_title("Dim Screen")
-        w["dim_switch"].set_subtitle("Reduce backlight brightness before locking")
+        w["dim_switch"].set_subtitle("Reduce display backlight when idle")
         w["dim_switch"].set_icon_name("display-brightness-symbolic")
-        w["dim_switch"].connect("notify::active", lambda s, p: self._on_setting_changed())
+        w["dim_switch"].connect("notify::active", lambda s, p: self._on_control_changed())
         group.add(w["dim_switch"])
 
-        # Dim timeout combo
-        dim_model = Gtk.StringList.new([c[0] for c in DIM_TIMEOUT_CHOICES])
+        # Preset combo
+        dim_model = Gtk.StringList.new([c[0] for c in TIMEOUT_PRESETS])
         w["dim_combo"] = Adw.ComboRow()
         w["dim_combo"].set_title("Dim Delay")
         w["dim_combo"].set_model(dim_model)
-        w["dim_combo"].connect("notify::selected", lambda s, p: self._on_setting_changed())
+        w["dim_combo"].connect("notify::selected", lambda s, p: self._on_combo_changed(w["dim_combo"], w["dim_spin"]))
         group.add(w["dim_combo"])
 
-        # Turn Off Screen (DPMS)
+        # Custom Spin
+        w["dim_spin"] = Adw.SpinRow.new_with_range(10, 86400, 10)
+        w["dim_spin"].set_title("Custom Dim Delay (seconds)")
+        w["dim_spin"].set_visible(False)
+        w["dim_spin"].connect("notify::value", lambda s, p: self._on_control_changed())
+        group.add(w["dim_spin"])
+
+        # Dim Brightness Spin / Level
+        w["dim_brightness"] = Adw.SpinRow.new_with_range(1, 100, 5)
+        w["dim_brightness"].set_title("Dimmed Brightness Level (%)")
+        w["dim_brightness"].set_subtitle("Target screen brightness percentage when dimmed")
+        w["dim_brightness"].connect("notify::value", lambda s, p: self._on_control_changed())
+        group.add(w["dim_brightness"])
+
+        # 2. Turn Off Screen (DPMS)
         w["dpms_switch"] = Adw.SwitchRow()
         w["dpms_switch"].set_title("Turn Off Screen (DPMS)")
-        w["dpms_switch"].set_subtitle("Power down displays when inactive")
+        w["dpms_switch"].set_subtitle("Put monitors into standby mode")
         w["dpms_switch"].set_icon_name("video-display-symbolic")
-        w["dpms_switch"].connect("notify::active", lambda s, p: self._on_setting_changed())
+        w["dpms_switch"].connect("notify::active", lambda s, p: self._on_control_changed())
         group.add(w["dpms_switch"])
 
-        dpms_model = Gtk.StringList.new([c[0] for c in DPMS_TIMEOUT_CHOICES])
+        dpms_model = Gtk.StringList.new([c[0] for c in TIMEOUT_PRESETS])
         w["dpms_combo"] = Adw.ComboRow()
         w["dpms_combo"].set_title("Turn Off Screen Delay")
         w["dpms_combo"].set_model(dpms_model)
-        w["dpms_combo"].connect("notify::selected", lambda s, p: self._on_setting_changed())
+        w["dpms_combo"].connect("notify::selected", lambda s, p: self._on_combo_changed(w["dpms_combo"], w["dpms_spin"]))
         group.add(w["dpms_combo"])
 
-        # Lock Screen
+        w["dpms_spin"] = Adw.SpinRow.new_with_range(10, 86400, 10)
+        w["dpms_spin"].set_title("Custom Screen Off Delay (seconds)")
+        w["dpms_spin"].set_visible(False)
+        w["dpms_spin"].connect("notify::value", lambda s, p: self._on_control_changed())
+        group.add(w["dpms_spin"])
+
+        # 3. Lock Session
         w["lock_switch"] = Adw.SwitchRow()
-        w["lock_switch"].set_title("Lock Screen")
-        w["lock_switch"].set_subtitle("Lock the session with hyprlock")
+        w["lock_switch"].set_title("Lock Session")
+        w["lock_switch"].set_subtitle("Secure screen with hyprlock")
         w["lock_switch"].set_icon_name("system-lock-screen-symbolic")
-        w["lock_switch"].connect("notify::active", lambda s, p: self._on_setting_changed())
+        w["lock_switch"].connect("notify::active", lambda s, p: self._on_control_changed())
         group.add(w["lock_switch"])
 
-        lock_model = Gtk.StringList.new([c[0] for c in LOCK_TIMEOUT_CHOICES])
+        lock_model = Gtk.StringList.new([c[0] for c in TIMEOUT_PRESETS])
         w["lock_combo"] = Adw.ComboRow()
-        w["lock_combo"].set_title("Lock Screen Delay")
+        w["lock_combo"].set_title("Lock Session Delay")
         w["lock_combo"].set_model(lock_model)
-        w["lock_combo"].connect("notify::selected", lambda s, p: self._on_setting_changed())
+        w["lock_combo"].connect("notify::selected", lambda s, p: self._on_combo_changed(w["lock_combo"], w["lock_spin"]))
         group.add(w["lock_combo"])
 
-        # Suspend PC
+        w["lock_spin"] = Adw.SpinRow.new_with_range(10, 86400, 10)
+        w["lock_spin"].set_title("Custom Lock Delay (seconds)")
+        w["lock_spin"].set_visible(False)
+        w["lock_spin"].connect("notify::value", lambda s, p: self._on_control_changed())
+        group.add(w["lock_spin"])
+
+        # 4. Suspend System
         w["suspend_switch"] = Adw.SwitchRow()
-        w["suspend_switch"].set_title("Automatic Suspend")
-        w["suspend_switch"].set_subtitle("Put the system into low power sleep")
+        w["suspend_switch"].set_title("Suspend System")
+        w["suspend_switch"].set_subtitle("Enter low-power sleep mode")
         w["suspend_switch"].set_icon_name("system-shutdown-symbolic")
-        w["suspend_switch"].connect("notify::active", lambda s, p: self._on_setting_changed())
+        w["suspend_switch"].connect("notify::active", lambda s, p: self._on_control_changed())
         group.add(w["suspend_switch"])
 
-        suspend_model = Gtk.StringList.new([c[0] for c in SUSPEND_TIMEOUT_CHOICES])
+        suspend_model = Gtk.StringList.new([c[0] for c in TIMEOUT_PRESETS])
         w["suspend_combo"] = Adw.ComboRow()
         w["suspend_combo"].set_title("Suspend Delay")
         w["suspend_combo"].set_model(suspend_model)
-        w["suspend_combo"].connect("notify::selected", lambda s, p: self._on_setting_changed())
+        w["suspend_combo"].connect("notify::selected", lambda s, p: self._on_combo_changed(w["suspend_combo"], w["suspend_spin"]))
         group.add(w["suspend_combo"])
+
+        w["suspend_spin"] = Adw.SpinRow.new_with_range(10, 86400, 10)
+        w["suspend_spin"].set_title("Custom Suspend Delay (seconds)")
+        w["suspend_spin"].set_visible(False)
+        w["suspend_spin"].connect("notify::value", lambda s, p: self._on_control_changed())
+        group.add(w["suspend_spin"])
 
         return w
 
-    def _refresh_power_status(self) -> bool:
-        status = self.power_mgr.get_status()
+    def _on_combo_changed(self, combo: Adw.ComboRow, spin: Adw.SpinRow):
+        idx = combo.get_selected()
+        is_custom = (idx == len(TIMEOUT_PRESETS) - 1)
+        spin.set_visible(is_custom)
+        if not is_custom:
+            spin.set_value(TIMEOUT_PRESETS[idx][1])
+        self._on_control_changed()
+
+    def _on_power_status_changed(self, status: PowerStatus):
+        GLib.idle_add(self._update_power_ui, status)
+
+    def _periodic_refresh(self) -> bool:
+        self._update_power_ui(self.power_mgr.get_status())
+        self._update_daemon_status()
+        return True
+
+    def _update_power_ui(self, status: PowerStatus):
         if not status.has_battery:
-            self.status_row.set_title("Desktop Power (No Battery Detected)")
-            self.status_row.set_subtitle("Using Plugged In (AC) configuration profile")
+            self.status_row.set_title("Desktop System (AC Power)")
+            self.status_row.set_subtitle("No battery detected — using Plugged In profile")
             self.status_row.set_icon_name("computer-symbolic")
-            self.bat_group.set_visible(False)
+            self.profile_stack.set_visible_child_name("ac")
+            self.profile_switcher.set_visible(False)
         else:
-            self.bat_group.set_visible(True)
+            self.profile_switcher.set_visible(True)
             if status.on_ac:
                 bat_str = f" ({status.battery_percentage}%)" if status.battery_percentage is not None else ""
                 state_str = f" - {status.battery_state}" if status.battery_state else ""
                 self.status_row.set_title(f"Plugged In (AC Power){bat_str}")
-                self.status_row.set_subtitle(f"Currently active: AC profile{state_str}")
-                self.status_row.set_icon_name("battery-charging-symbolic" if status.battery_state == "Charging" else "ac-adapter-symbolic")
+                self.status_row.set_subtitle(f"Currently active: Plugged In profile{state_str}")
+                icon = "battery-charging-symbolic" if status.battery_state == "Charging" else "ac-adapter-symbolic"
+                self.status_row.set_icon_name(icon)
             else:
                 pct = status.battery_percentage if status.battery_percentage is not None else 0
                 self.status_row.set_title(f"On Battery ({pct}%)")
@@ -233,7 +336,30 @@ class PowerScreenPage(BasePage):
                 else:
                     icon = "battery-caution-symbolic"
                 self.status_row.set_icon_name(icon)
-        return True
+
+    def _update_daemon_status(self):
+        st: DaemonStatus = self.hypridle_sync.get_daemon_status()
+        if not st.is_installed:
+            self.daemon_row.set_title("Idle Daemon: Missing")
+            self.daemon_row.set_subtitle("hypridle is not installed (pacman -S hypridle)")
+            self.daemon_row.set_icon_name("dialog-warning-symbolic")
+            self.restart_daemon_btn.set_sensitive(False)
+        elif st.is_running:
+            self.daemon_row.set_title("Idle Daemon: Running 🟢")
+            self.daemon_row.set_subtitle(st.description)
+            self.daemon_row.set_icon_name("emblem-ok-symbolic")
+            self.restart_daemon_btn.set_sensitive(True)
+            self.restart_daemon_btn.set_label("Restart")
+        else:
+            self.daemon_row.set_title("Idle Daemon: Stopped 🔴")
+            self.daemon_row.set_subtitle("Daemon is inactive — click Start to activate")
+            self.daemon_row.set_icon_name("process-stop-symbolic")
+            self.restart_daemon_btn.set_sensitive(True)
+            self.restart_daemon_btn.set_label("Start")
+
+    def _update_preview(self):
+        content = self.hypridle_sync.generate_config(self.config_mgr.config)
+        self.preview_buffer.set_text(content)
 
     def _load_from_config(self):
         self._updating_ui = True
@@ -243,27 +369,37 @@ class PowerScreenPage(BasePage):
         self.lock_cmd_row.set_text(cfg.general.lock_cmd)
         self.auto_sync_row.set_active(cfg.general.auto_sync_hypridle)
 
-        # Battery
-        self.bat_widgets["dim_switch"].set_active(cfg.battery.dim_enabled)
-        self.bat_widgets["dim_combo"].set_selected(find_closest_index(DIM_TIMEOUT_CHOICES, cfg.battery.dim_timeout))
-        self.bat_widgets["dpms_switch"].set_active(cfg.battery.dpms_enabled)
-        self.bat_widgets["dpms_combo"].set_selected(find_closest_index(DPMS_TIMEOUT_CHOICES, cfg.battery.dpms_timeout))
-        self.bat_widgets["lock_switch"].set_active(cfg.battery.lock_enabled)
-        self.bat_widgets["lock_combo"].set_selected(find_closest_index(LOCK_TIMEOUT_CHOICES, cfg.battery.lock_timeout))
-        self.bat_widgets["suspend_switch"].set_active(cfg.battery.suspend_enabled)
-        self.bat_widgets["suspend_combo"].set_selected(find_closest_index(SUSPEND_TIMEOUT_CHOICES, cfg.battery.suspend_timeout))
-
-        # AC
-        self.ac_widgets["dim_switch"].set_active(cfg.ac.dim_enabled)
-        self.ac_widgets["dim_combo"].set_selected(find_closest_index(DIM_TIMEOUT_CHOICES, cfg.ac.dim_timeout))
-        self.ac_widgets["dpms_switch"].set_active(cfg.ac.dpms_enabled)
-        self.ac_widgets["dpms_combo"].set_selected(find_closest_index(DPMS_TIMEOUT_CHOICES, cfg.ac.dpms_timeout))
-        self.ac_widgets["lock_switch"].set_active(cfg.ac.lock_enabled)
-        self.ac_widgets["lock_combo"].set_selected(find_closest_index(LOCK_TIMEOUT_CHOICES, cfg.ac.lock_timeout))
-        self.ac_widgets["suspend_switch"].set_active(cfg.ac.suspend_enabled)
-        self.ac_widgets["suspend_combo"].set_selected(find_closest_index(SUSPEND_TIMEOUT_CHOICES, cfg.ac.suspend_timeout))
+        self._load_profile_widgets(cfg.battery, self.bat_widgets)
+        self._load_profile_widgets(cfg.ac, self.ac_widgets)
 
         self._updating_ui = False
+        self._update_preview()
+
+    def _load_profile_widgets(self, prof: PowerProfileConfig, w: dict):
+        w["dim_switch"].set_active(prof.dim_enabled)
+        dim_idx = find_timeout_index(prof.dim_timeout)
+        w["dim_combo"].set_selected(dim_idx)
+        w["dim_spin"].set_value(prof.dim_timeout)
+        w["dim_spin"].set_visible(dim_idx == len(TIMEOUT_PRESETS) - 1)
+        w["dim_brightness"].set_value(prof.dim_brightness)
+
+        w["dpms_switch"].set_active(prof.dpms_enabled)
+        dpms_idx = find_timeout_index(prof.dpms_timeout)
+        w["dpms_combo"].set_selected(dpms_idx)
+        w["dpms_spin"].set_value(prof.dpms_timeout)
+        w["dpms_spin"].set_visible(dpms_idx == len(TIMEOUT_PRESETS) - 1)
+
+        w["lock_switch"].set_active(prof.lock_enabled)
+        lock_idx = find_timeout_index(prof.lock_timeout)
+        w["lock_combo"].set_selected(lock_idx)
+        w["lock_spin"].set_value(prof.lock_timeout)
+        w["lock_spin"].set_visible(lock_idx == len(TIMEOUT_PRESETS) - 1)
+
+        w["suspend_switch"].set_active(prof.suspend_enabled)
+        susp_idx = find_timeout_index(prof.suspend_timeout)
+        w["suspend_combo"].set_selected(susp_idx)
+        w["suspend_spin"].set_value(prof.suspend_timeout)
+        w["suspend_spin"].set_visible(susp_idx == len(TIMEOUT_PRESETS) - 1)
 
     def _save_to_config(self):
         if self._updating_ui:
@@ -274,51 +410,74 @@ class PowerScreenPage(BasePage):
         cfg.general.lock_cmd = self.lock_cmd_row.get_text() or "pidof hyprlock || hyprlock"
         cfg.general.auto_sync_hypridle = self.auto_sync_row.get_active()
 
-        # Battery
-        cfg.battery.dim_enabled = self.bat_widgets["dim_switch"].get_active()
-        cfg.battery.dim_timeout = DIM_TIMEOUT_CHOICES[self.bat_widgets["dim_combo"].get_selected()][1]
-        cfg.battery.dpms_enabled = self.bat_widgets["dpms_switch"].get_active()
-        cfg.battery.dpms_timeout = DPMS_TIMEOUT_CHOICES[self.bat_widgets["dpms_combo"].get_selected()][1]
-        cfg.battery.lock_enabled = self.bat_widgets["lock_switch"].get_active()
-        cfg.battery.lock_timeout = LOCK_TIMEOUT_CHOICES[self.bat_widgets["lock_combo"].get_selected()][1]
-        cfg.battery.suspend_enabled = self.bat_widgets["suspend_switch"].get_active()
-        cfg.battery.suspend_timeout = SUSPEND_TIMEOUT_CHOICES[self.bat_widgets["suspend_combo"].get_selected()][1]
-
-        # AC
-        cfg.ac.dim_enabled = self.ac_widgets["dim_switch"].get_active()
-        cfg.ac.dim_timeout = DIM_TIMEOUT_CHOICES[self.ac_widgets["dim_combo"].get_selected()][1]
-        cfg.ac.dpms_enabled = self.ac_widgets["dpms_switch"].get_active()
-        cfg.ac.dpms_timeout = DPMS_TIMEOUT_CHOICES[self.ac_widgets["dpms_combo"].get_selected()][1]
-        cfg.ac.lock_enabled = self.ac_widgets["lock_switch"].get_active()
-        cfg.ac.lock_timeout = LOCK_TIMEOUT_CHOICES[self.ac_widgets["lock_combo"].get_selected()][1]
-        cfg.ac.suspend_enabled = self.ac_widgets["suspend_switch"].get_active()
-        cfg.ac.suspend_timeout = SUSPEND_TIMEOUT_CHOICES[self.ac_widgets["suspend_combo"].get_selected()][1]
+        self._save_profile_widgets(cfg.battery, self.bat_widgets)
+        self._save_profile_widgets(cfg.ac, self.ac_widgets)
 
         self.config_mgr.save()
+        self._update_preview()
 
         if cfg.general.auto_sync_hypridle:
             self.hypridle_sync.sync_and_reload(cfg)
 
-    def _on_setting_changed(self):
+    def _save_profile_widgets(self, prof: PowerProfileConfig, w: dict):
+        prof.dim_enabled = w["dim_switch"].get_active()
+        prof.dim_brightness = int(w["dim_brightness"].get_value())
+        dim_idx = w["dim_combo"].get_selected()
+        prof.dim_timeout = int(w["dim_spin"].get_value()) if dim_idx == len(TIMEOUT_PRESETS) - 1 else TIMEOUT_PRESETS[dim_idx][1]
+
+        prof.dpms_enabled = w["dpms_switch"].get_active()
+        dpms_idx = w["dpms_combo"].get_selected()
+        prof.dpms_timeout = int(w["dpms_spin"].get_value()) if dpms_idx == len(TIMEOUT_PRESETS) - 1 else TIMEOUT_PRESETS[dpms_idx][1]
+
+        prof.lock_enabled = w["lock_switch"].get_active()
+        lock_idx = w["lock_combo"].get_selected()
+        prof.lock_timeout = int(w["lock_spin"].get_value()) if lock_idx == len(TIMEOUT_PRESETS) - 1 else TIMEOUT_PRESETS[lock_idx][1]
+
+        prof.suspend_enabled = w["suspend_switch"].get_active()
+        susp_idx = w["suspend_combo"].get_selected()
+        prof.suspend_timeout = int(w["suspend_spin"].get_value()) if susp_idx == len(TIMEOUT_PRESETS) - 1 else TIMEOUT_PRESETS[susp_idx][1]
+
+    def _on_control_changed(self):
         self._save_to_config()
 
     def _on_inhibit_toggled(self, widget, param):
         self._save_to_config()
         if self.toast_callback:
-            msg = "Keep Awake Enabled (Idle Inhibited)" if self.inhibit_row.get_active() else "Idle Timeouts Restored"
+            msg = "Keep Awake Active (Idle Inhibited)" if self.inhibit_row.get_active() else "Idle Timeouts Restored"
             self.toast_callback(msg)
 
-    def _on_lock_cmd_changed(self, widget):
-        self._save_to_config()
-
-    def _on_auto_sync_toggled(self, widget, param):
-        self._save_to_config()
+    def _on_restart_daemon_clicked(self, widget):
+        success = self.hypridle_sync.restart_daemon()
+        self._update_daemon_status()
+        if self.toast_callback:
+            self.toast_callback("Hypridle daemon restarted!" if success else "Failed to restart hypridle")
 
     def _on_apply_clicked(self, widget):
         self._save_to_config()
         success = self.hypridle_sync.sync_and_reload(self.config_mgr.config)
+        self._update_daemon_status()
         if self.toast_callback:
-            if success:
-                self.toast_callback("Hypridle configuration updated and reloaded!")
-            else:
-                self.toast_callback("Failed to reload hypridle daemon")
+            self.toast_callback("Configuration synchronized & daemon reloaded!" if success else "Failed to reload hypridle")
+
+    def _on_reset_clicked(self, widget):
+        # Confirmation Dialog
+        dialog = Adw.AlertDialog.new(
+            "Reset Settings to Defaults?",
+            "This will restore all power timeouts, dimming preferences, and screen lock settings to factory defaults."
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("reset", "Reset Settings")
+        dialog.set_response_appearance("reset", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def on_response(d, resp):
+            if resp == "reset":
+                self.config_mgr.reset_to_defaults()
+                self._load_from_config()
+                self.hypridle_sync.sync_and_reload(self.config_mgr.config)
+                if self.toast_callback:
+                    self.toast_callback("Settings reset to defaults!")
+
+        root = self.get_root()
+        dialog.choose(root, None, on_response)
