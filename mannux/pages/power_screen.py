@@ -54,7 +54,7 @@ class PowerScreenPage(BasePage):
 
     def _build_ui(self):
         # -------------------------------------------------------------
-        # 1. System Status & Quick Toggles
+        # 1. System Status & Quick Controls
         # -------------------------------------------------------------
         self.status_group = Adw.PreferencesGroup()
         self.status_group.set_title("System Status & Controls")
@@ -118,49 +118,85 @@ class PowerScreenPage(BasePage):
         self.profiles_group.add(self.profile_stack)
 
         # -------------------------------------------------------------
-        # 3. Screen Locker & General Commands
+        # 3. Advanced Settings (Expandable at Bottom)
         # -------------------------------------------------------------
-        self.gen_group = Adw.PreferencesGroup()
-        self.gen_group.set_title("Hyprland & Screen Locker")
-        self.add(self.gen_group)
+        self.advanced_group = Adw.PreferencesGroup()
+        self.advanced_group.set_title("Advanced")
+        self.advanced_group.set_description("Expert settings, session commands, daemon flags, and maintenance")
+        self.add(self.advanced_group)
 
+        self.advanced_expander = Adw.ExpanderRow()
+        self.advanced_expander.set_title("Advanced Settings")
+        self.advanced_expander.set_subtitle("Session commands, daemon options, backup restore, and config preview")
+        self.advanced_expander.set_icon_name("preferences-other-symbolic")
+        self.advanced_expander.set_expanded(False)
+        self.advanced_group.add(self.advanced_expander)
+
+        # --- A. Custom Session Commands ---
         self.lock_cmd_row = Adw.EntryRow()
         self.lock_cmd_row.set_title("Lock Command")
         self.lock_cmd_row.connect("changed", lambda w: self._save_to_config())
-        self.gen_group.add(self.lock_cmd_row)
+        self.advanced_expander.add_row(self.lock_cmd_row)
 
+        self.before_sleep_cmd_row = Adw.EntryRow()
+        self.before_sleep_cmd_row.set_title("Before Sleep Command")
+        self.before_sleep_cmd_row.connect("changed", lambda w: self._save_to_config())
+        self.advanced_expander.add_row(self.before_sleep_cmd_row)
+
+        self.after_sleep_cmd_row = Adw.EntryRow()
+        self.after_sleep_cmd_row.set_title("After Sleep Command")
+        self.after_sleep_cmd_row.connect("changed", lambda w: self._save_to_config())
+        self.advanced_expander.add_row(self.after_sleep_cmd_row)
+
+        # --- B. Hypridle Daemon Options ---
         self.auto_sync_row = Adw.SwitchRow()
         self.auto_sync_row.set_title("Automatic Sync & Reload")
         self.auto_sync_row.set_subtitle("Instantly write ~/.config/hypr/hypridle.conf on change")
         self.auto_sync_row.connect("notify::active", lambda w, p: self._save_to_config())
-        self.gen_group.add(self.auto_sync_row)
+        self.advanced_expander.add_row(self.auto_sync_row)
 
+        self.ignore_dbus_row = Adw.SwitchRow()
+        self.ignore_dbus_row.set_title("Ignore D-Bus Inhibitors")
+        self.ignore_dbus_row.set_subtitle("Ignore applications requesting idle inhibition via D-Bus")
+        self.ignore_dbus_row.connect("notify::active", lambda w, p: self._save_to_config())
+        self.advanced_expander.add_row(self.ignore_dbus_row)
+
+        self.ignore_systemd_row = Adw.SwitchRow()
+        self.ignore_systemd_row.set_title("Ignore Systemd Inhibitors")
+        self.ignore_systemd_row.set_subtitle("Ignore system-level systemd-inhibit requests")
+        self.ignore_systemd_row.connect("notify::active", lambda w, p: self._save_to_config())
+        self.advanced_expander.add_row(self.ignore_systemd_row)
+
+        # Force sync action row
         apply_row = Adw.ActionRow()
-        apply_row.set_title("Apply Settings Now")
-        apply_row.set_subtitle("Force regenerate hypridle.conf and restart daemon")
-        apply_btn = Gtk.Button(label="Apply & Restart")
+        apply_row.set_title("Force Apply & Restart Daemon")
+        apply_row.set_subtitle("Manually regenerate hypridle.conf and restart background process")
+        apply_btn = Gtk.Button(label="Apply Now")
         apply_btn.set_valign(Gtk.Align.CENTER)
         apply_btn.add_css_class("suggested-action")
         apply_btn.connect("clicked", self._on_apply_clicked)
         apply_row.add_suffix(apply_btn)
-        self.gen_group.add(apply_row)
+        self.advanced_expander.add_row(apply_row)
 
-        # -------------------------------------------------------------
-        # 4. Config Preview & Reset Drawer
-        # -------------------------------------------------------------
-        self.tools_group = Adw.PreferencesGroup()
-        self.tools_group.set_title("Configuration & Maintenance")
-        self.add(self.tools_group)
+        # --- C. Maintenance Tools ---
+        self.restore_row = Adw.ActionRow()
+        self.restore_row.set_title("Restore Original Config")
+        self.restore_row.set_subtitle("Restore ~/.config/hypr/hypridle.conf.mannux.bak")
+        self.restore_btn = Gtk.Button(label="Restore Backup")
+        self.restore_btn.set_valign(Gtk.Align.CENTER)
+        self.restore_btn.connect("clicked", self._on_restore_clicked)
+        self.restore_row.add_suffix(self.restore_btn)
+        self.advanced_expander.add_row(self.restore_row)
 
-        # Config preview expander
+        # --- D. Live Config Preview ---
         self.preview_expander = Adw.ExpanderRow()
         self.preview_expander.set_title("Preview Generated hypridle.conf")
-        self.preview_expander.set_subtitle("View exact hypridle configuration syntax")
+        self.preview_expander.set_subtitle("View live hypridle configuration syntax")
         self.preview_expander.set_icon_name("text-x-generic-symbolic")
 
         preview_scroller = Gtk.ScrolledWindow()
         preview_scroller.set_min_content_height(180)
-        preview_scroller.set_max_content_height(300)
+        preview_scroller.set_max_content_height(320)
         preview_scroller.set_margin_top(6)
         preview_scroller.set_margin_bottom(6)
         preview_scroller.set_margin_start(12)
@@ -175,22 +211,23 @@ class PowerScreenPage(BasePage):
         preview_scroller.set_child(self.preview_view)
 
         self.preview_expander.add_row(preview_scroller)
-        self.tools_group.add(self.preview_expander)
+        self.advanced_expander.add_row(self.preview_expander)
 
-        # Reset button
+        # --- E. Reset to Defaults ---
         reset_row = Adw.ActionRow()
-        reset_row.set_title("Reset Settings")
-        reset_row.set_subtitle("Restore factory recommended defaults")
+        reset_row.set_title("Reset Settings to Defaults")
+        reset_row.set_subtitle("Restore all factory recommended configurations")
         reset_btn = Gtk.Button(label="Reset Defaults")
         reset_btn.set_valign(Gtk.Align.CENTER)
         reset_btn.add_css_class("destructive-action")
         reset_btn.connect("clicked", self._on_reset_clicked)
         reset_row.add_suffix(reset_btn)
-        self.tools_group.add(reset_row)
+        self.advanced_expander.add_row(reset_row)
 
         # Initial updates
         self._update_power_ui(self.power_mgr.get_status())
         self._update_daemon_status()
+        self._update_backup_status()
         self._update_preview()
 
     def _create_profile_controls(self, name: str, container: Gtk.Box) -> dict:
@@ -307,7 +344,16 @@ class PowerScreenPage(BasePage):
     def _periodic_refresh(self) -> bool:
         self._update_power_ui(self.power_mgr.get_status())
         self._update_daemon_status()
+        self._update_backup_status()
         return True
+
+    def _update_backup_status(self):
+        has_bak = self.hypridle_sync.has_backup()
+        self.restore_btn.set_sensitive(has_bak)
+        if has_bak:
+            self.restore_row.set_subtitle("Backup found at ~/.config/hypr/hypridle.conf.mannux.bak")
+        else:
+            self.restore_row.set_subtitle("No backup found")
 
     def _update_power_ui(self, status: PowerStatus):
         if not status.has_battery:
@@ -367,7 +413,11 @@ class PowerScreenPage(BasePage):
 
         self.inhibit_row.set_active(cfg.general.inhibit_idle)
         self.lock_cmd_row.set_text(cfg.general.lock_cmd)
+        self.before_sleep_cmd_row.set_text(cfg.general.before_sleep_cmd)
+        self.after_sleep_cmd_row.set_text(cfg.general.after_sleep_cmd)
         self.auto_sync_row.set_active(cfg.general.auto_sync_hypridle)
+        self.ignore_dbus_row.set_active(cfg.general.ignore_dbus_inhibit)
+        self.ignore_systemd_row.set_active(cfg.general.ignore_systemd_inhibit)
 
         self._load_profile_widgets(cfg.battery, self.bat_widgets)
         self._load_profile_widgets(cfg.ac, self.ac_widgets)
@@ -408,7 +458,11 @@ class PowerScreenPage(BasePage):
         cfg = self.config_mgr.config
         cfg.general.inhibit_idle = self.inhibit_row.get_active()
         cfg.general.lock_cmd = self.lock_cmd_row.get_text() or "pidof hyprlock || hyprlock"
+        cfg.general.before_sleep_cmd = self.before_sleep_cmd_row.get_text() or "loginctl lock-session"
+        cfg.general.after_sleep_cmd = self.after_sleep_cmd_row.get_text() or "hyprctl dispatch dpms on"
         cfg.general.auto_sync_hypridle = self.auto_sync_row.get_active()
+        cfg.general.ignore_dbus_inhibit = self.ignore_dbus_row.get_active()
+        cfg.general.ignore_systemd_inhibit = self.ignore_systemd_row.get_active()
 
         self._save_profile_widgets(cfg.battery, self.bat_widgets)
         self._save_profile_widgets(cfg.ac, self.ac_widgets)
@@ -459,11 +513,31 @@ class PowerScreenPage(BasePage):
         if self.toast_callback:
             self.toast_callback("Configuration synchronized & daemon reloaded!" if success else "Failed to reload hypridle")
 
+    def _on_restore_clicked(self, widget):
+        dialog = Adw.AlertDialog.new(
+            "Restore Original Backup Config?",
+            "This will replace your current ~/.config/hypr/hypridle.conf with the original backup created on first run and restart hypridle."
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("restore", "Restore Backup")
+        dialog.set_response_appearance("restore", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def on_response(d, resp):
+            if resp == "restore":
+                success = self.hypridle_sync.restore_backup()
+                self._update_daemon_status()
+                if self.toast_callback:
+                    self.toast_callback("Original backup restored and daemon restarted!" if success else "Failed to restore backup")
+
+        root = self.get_root()
+        dialog.choose(root, None, on_response)
+
     def _on_reset_clicked(self, widget):
-        # Confirmation Dialog
         dialog = Adw.AlertDialog.new(
             "Reset Settings to Defaults?",
-            "This will restore all power timeouts, dimming preferences, and screen lock settings to factory defaults."
+            "This will restore all power timeouts, dimming preferences, screen lock settings, and advanced options to factory defaults."
         )
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("reset", "Reset Settings")
@@ -477,7 +551,7 @@ class PowerScreenPage(BasePage):
                 self._load_from_config()
                 self.hypridle_sync.sync_and_reload(self.config_mgr.config)
                 if self.toast_callback:
-                    self.toast_callback("Settings reset to defaults!")
+                    self.toast_callback("Settings reset to factory defaults!")
 
         root = self.get_root()
         dialog.choose(root, None, on_response)

@@ -83,6 +83,9 @@ class HypridleSync:
         ac_name = power_status.ac_name or "ADP1"
         has_battery = power_status.has_battery
 
+        ignore_dbus = "true" if config.general.ignore_dbus_inhibit else "false"
+        ignore_systemd = "true" if config.general.ignore_systemd_inhibit else "false"
+
         lines = [
             "# ====================================================================",
             "# Generated automatically by Mannux Settings",
@@ -93,8 +96,8 @@ class HypridleSync:
             f"    lock_cmd = {config.general.lock_cmd}",
             f"    before_sleep_cmd = {config.general.before_sleep_cmd}",
             f"    after_sleep_cmd = {config.general.after_sleep_cmd}",
-            "    ignore_dbus_inhibit = false",
-            "    ignore_systemd_inhibit = false",
+            f"    ignore_dbus_inhibit = {ignore_dbus}",
+            f"    ignore_systemd_inhibit = {ignore_systemd}",
             "}",
             ""
         ]
@@ -273,6 +276,22 @@ class HypridleSync:
         else:
             res = subprocess.run(["killall", "hypridle"], capture_output=True)
             return res.returncode == 0
+
+    def has_backup(self) -> bool:
+        return os.path.exists(HYPRIDLE_BACKUP_PATH)
+
+    def restore_backup(self) -> bool:
+        if not self.has_backup():
+            log.warning("No backup hypridle.conf found to restore")
+            return False
+        try:
+            shutil.copy2(HYPRIDLE_BACKUP_PATH, HYPRIDLE_CONF_PATH)
+            log.info(f"Restored original config from {HYPRIDLE_BACKUP_PATH}")
+            self.restart_daemon()
+            return True
+        except Exception as e:
+            log.error(f"Failed to restore backup config: {e}")
+            return False
 
     def sync_and_reload(self, config: AppConfig) -> bool:
         if self.write_config(config):

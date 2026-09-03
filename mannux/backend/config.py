@@ -26,6 +26,8 @@ class GeneralConfig:
     after_sleep_cmd: str = "hyprctl dispatch dpms on"
     inhibit_idle: bool = False
     auto_sync_hypridle: bool = True
+    ignore_dbus_inhibit: bool = False
+    ignore_systemd_inhibit: bool = False
 
 @dataclass
 class AppConfig:

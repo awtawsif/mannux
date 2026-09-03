@@ -73,3 +73,20 @@ def test_listener_ordering():
     pos_susp = content.find("timeout = 1000")
 
     assert pos_dim < pos_lock < pos_dpms < pos_susp
+
+def test_advanced_inhibitors_and_commands():
+    mock_power = MockPowerManager(has_battery=False, on_ac=True)
+    sync = HypridleSync(power_mgr=mock_power)
+    cfg = AppConfig()
+    cfg.general.lock_cmd = "swaylock -f"
+    cfg.general.before_sleep_cmd = "playerctl pause"
+    cfg.general.after_sleep_cmd = "brightnessctl -r"
+    cfg.general.ignore_dbus_inhibit = True
+    cfg.general.ignore_systemd_inhibit = True
+
+    content = sync.generate_config(cfg)
+    assert "lock_cmd = swaylock -f" in content
+    assert "before_sleep_cmd = playerctl pause" in content
+    assert "after_sleep_cmd = brightnessctl -r" in content
+    assert "ignore_dbus_inhibit = true" in content
+    assert "ignore_systemd_inhibit = true" in content
