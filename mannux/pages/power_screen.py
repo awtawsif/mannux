@@ -524,7 +524,12 @@ class PowerScreenPage(BasePage):
         dialog.set_default_response("cancel")
         dialog.set_close_response("cancel")
 
-        def on_response(d, resp):
+        def on_response(d, result):
+            try:
+                resp = d.choose_finish(result)
+            except Exception:
+                resp = "cancel"
+
             if resp == "restore":
                 success = self.hypridle_sync.restore_backup()
                 self._update_daemon_status()
@@ -545,7 +550,12 @@ class PowerScreenPage(BasePage):
         dialog.set_default_response("cancel")
         dialog.set_close_response("cancel")
 
-        def on_response(d, resp):
+        def on_response(d, result):
+            try:
+                resp = d.choose_finish(result)
+            except Exception:
+                resp = "cancel"
+
             if resp == "reset":
                 self.config_mgr.reset_to_defaults()
                 self._load_from_config()

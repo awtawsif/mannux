@@ -1,4 +1,5 @@
 import copy
+from typing import List, Tuple, Dict, Optional
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
@@ -25,12 +26,12 @@ class DisplaysPage(BasePage):
         self.toast_callback = toast_callback
 
         self.monitors: List[MonitorInfo] = []
+        self._active_applied_snapshot: List[MonitorInfo] = []
         self.current_monitor_idx: int = 0
         self._updating_ui: bool = False
         self._revert_timer_id: Optional[int] = None
         self._revert_seconds_left: int = 15
         self._revert_dialog: Optional[Adw.AlertDialog] = None
-        self._previous_snapshot: Optional[List[MonitorInfo]] = None
 
         self._build_ui()
         self.refresh_monitors()
@@ -177,6 +178,8 @@ class DisplaysPage(BasePage):
 
     def refresh_monitors(self):
         self.monitors = self.display_mgr.get_monitors()
+        self._active_applied_snapshot = copy.deepcopy(self.monitors)
+
         if not self.monitors:
             self.summary_row.set_title("No Monitors Detected")
             self.summary_row.set_subtitle("Ensure Hyprland is active")
@@ -373,10 +376,7 @@ class DisplaysPage(BasePage):
         if not mon:
             return
 
-        # Snapshot before applying
-        self._previous_snapshot = copy.deepcopy(self.monitors)
-
-        # Apply live
+        # Apply live settings
         success = self.display_mgr.apply_all(self.monitors)
         if not success:
             if self.toast_callback:
@@ -387,6 +387,7 @@ class DisplaysPage(BasePage):
         self._start_revert_countdown()
 
     def _start_revert_countdown(self):
+        self._stop_revert_timer()
         self._revert_seconds_left = 15
 
         self._revert_dialog = Adw.AlertDialog.new(
@@ -400,15 +401,24 @@ class DisplaysPage(BasePage):
         self._revert_dialog.set_default_response("keep")
         self._revert_dialog.set_close_response("revert")
 
-        def on_dialog_response(d, resp):
+        def on_dialog_response(d, result):
             self._stop_revert_timer()
+            try:
+                resp = d.choose_finish(result)
+            except Exception as e:
+                log.error(f"Error reading dialog response: {e}")
+                resp = "revert"
+
             if resp == "keep":
-                # Save to configuration file permanently
+                log.info("Display settings confirmed by user. Saving configuration permanently...")
                 self.display_mgr.save_config(self.monitors)
+                self._active_applied_snapshot = copy.deepcopy(self.monitors)
                 if self.toast_callback:
                     self.toast_callback("Display settings saved successfully!")
                 self._load_monitor_to_ui(self.monitors[self.current_monitor_idx])
+                self._update_preview()
             else:
+                log.info("Display settings reverted by user or timeout.")
                 self._revert_settings()
 
         root = self.get_root()
@@ -420,9 +430,12 @@ class DisplaysPage(BasePage):
     def _countdown_tick(self) -> bool:
         self._revert_seconds_left -= 1
         if self._revert_seconds_left <= 0:
+            self._stop_revert_timer()
             if self._revert_dialog:
+                # Force closing triggers choose_finish with close_response ("revert")
                 self._revert_dialog.force_close()
-            self._revert_settings()
+            else:
+                self._revert_settings()
             return False
 
         if self._revert_dialog:
@@ -436,11 +449,10 @@ class DisplaysPage(BasePage):
 
     def _revert_settings(self):
         self._stop_revert_timer()
-        if self._previous_snapshot:
-            log.info("Reverting display settings to previous snapshot")
-            self.monitors = copy.deepcopy(self._previous_snapshot)
-            self.display_mgr.apply_all(self.monitors)
-            self._load_monitor_to_ui(self.monitors[self.current_monitor_idx])
-            self._update_preview()
-            if self.toast_callback:
-                self.toast_callback("Display settings reverted.")
+        log.info("Reverting display settings to baseline snapshot")
+        self.monitors = copy.deepcopy(self._active_applied_snapshot)
+        self.display_mgr.apply_all(self.monitors)
+        self._load_monitor_to_ui(self.monitors[self.current_monitor_idx])
+        self._update_preview()
+        if self.toast_callback:
+            self.toast_callback("Display settings reverted.")

@@ -243,16 +243,22 @@ class DisplayManager:
         return "\n".join(lines)
 
     def save_config(self, monitors: List[MonitorInfo]) -> bool:
+        saved_any = False
         try:
-            if self.is_lua_mode() and os.path.exists(os.path.dirname(LUA_MONITORS_PATH)):
+            # 1. Lua configuration
+            lua_dir = os.path.dirname(LUA_MONITORS_PATH)
+            if self.is_lua_mode() or os.path.exists(LUA_MONITORS_PATH) or os.path.exists(lua_dir):
+                os.makedirs(lua_dir, exist_ok=True)
                 if os.path.exists(LUA_MONITORS_PATH) and not os.path.exists(LUA_MONITORS_BAK):
                     shutil.copy2(LUA_MONITORS_PATH, LUA_MONITORS_BAK)
                 content = self.generate_lua_config(monitors)
                 with open(LUA_MONITORS_PATH, "w") as f:
                     f.write(content)
                 log.info(f"Saved Lua monitor configuration to {LUA_MONITORS_PATH}")
-                return True
-            else:
+                saved_any = True
+
+            # 2. Legacy configuration (if not exclusively Lua, or if legacy conf exists)
+            if not self.is_lua_mode() or os.path.exists(LEGACY_MONITORS_PATH) or os.path.exists(os.path.join(HYPR_DIR, "hyprland.conf")):
                 os.makedirs(HYPR_DIR, exist_ok=True)
                 if os.path.exists(LEGACY_MONITORS_PATH) and not os.path.exists(LEGACY_MONITORS_BAK):
                     shutil.copy2(LEGACY_MONITORS_PATH, LEGACY_MONITORS_BAK)
@@ -260,7 +266,9 @@ class DisplayManager:
                 with open(LEGACY_MONITORS_PATH, "w") as f:
                     f.write(content)
                 log.info(f"Saved legacy monitor configuration to {LEGACY_MONITORS_PATH}")
-                return True
+                saved_any = True
+
+            return saved_any
         except Exception as e:
             log.error(f"Failed to save monitor configuration: {e}")
             return False
