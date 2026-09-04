@@ -44,6 +44,17 @@ VRR_OPTIONS = [
     ("Content-Aware / Smart VRR (Games & Video)", 3),
 ]
 
+CM_PRESETS = [
+    ("Default / sRGB (Standard Web)", "srgb"),
+    ("Auto (sRGB for 8-bit, Wide for 10-bit)", "auto"),
+    ("Display P3 (Apple Wide Color)", "dp3"),
+    ("DCI-P3 (Digital Cinema)", "dcip3"),
+    ("Adobe RGB (Photography)", "adobe"),
+    ("BT.2020 / Wide Gamut", "wide"),
+    ("HDR (High Dynamic Range)", "hdr"),
+    ("Custom ICC Profile...", "icc"),
+]
+
 @dataclass
 class MonitorInfo:
     id: int
@@ -62,6 +73,10 @@ class MonitorInfo:
     dpms_status: bool
     vrr: int = 0
     bitdepth: int = 8
+    cm: str = "srgb"
+    icc_profile: str = ""
+    sdr_brightness: float = 1.0
+    sdr_saturation: float = 1.0
     disabled: bool = False
     mirror_of: str = "none"
     bound_workspaces: List[int] = field(default_factory=list)
@@ -162,6 +177,10 @@ class DisplayManager:
                 else:
                     vrr_val = 0
 
+                cm_val = item.get("colorManagementPreset", "srgb") or "srgb"
+                sdr_bright = float(item.get("sdrBrightness", 1.0))
+                sdr_sat = float(item.get("sdrSaturation", 1.0))
+
                 mon = MonitorInfo(
                     id=item.get("id", 0),
                     name=item.get("name", "Unknown"),
@@ -179,6 +198,9 @@ class DisplayManager:
                     dpms_status=bool(item.get("dpmsStatus", True)),
                     vrr=vrr_val,
                     bitdepth=int(item.get("currentFormat", "8").replace("XRGB", "").replace("8888", "8") == "10" and 10 or 8),
+                    cm=cm_val,
+                    sdr_brightness=sdr_bright,
+                    sdr_saturation=sdr_sat,
                     disabled=bool(item.get("disabled", False)),
                     mirror_of=item.get("mirrorOf", "none") or "none",
                     available_modes=item.get("availableModes", []),
@@ -196,6 +218,12 @@ class DisplayManager:
             return f"hl.monitor({{ output = '{mon.name}', mode = 'preferred', position = 'auto', scale = {mon.scale}, mirror = '{mon.mirror_of}' }})"
         mode_str = f"{mon.width}x{mon.height}@{mon.refresh_rate:.2f}"
         pos_str = f"{mon.x}x{mon.y}"
+
+        if mon.icc_profile:
+            cm_part = f", icc = '{mon.icc_profile}'"
+        else:
+            cm_part = f", cm = '{mon.cm}', sdrbrightness = {mon.sdr_brightness:.2f}, sdrsaturation = {mon.sdr_saturation:.2f}"
+
         return (
             f"hl.monitor({{"
             f" output = '{mon.name}',"
@@ -205,6 +233,7 @@ class DisplayManager:
             f" transform = {mon.transform},"
             f" bitdepth = {mon.bitdepth},"
             f" vrr = {mon.vrr}"
+            f"{cm_part}"
             f" }})"
         )
 
@@ -215,7 +244,13 @@ class DisplayManager:
             return f"monitor = {mon.name}, preferred, auto, {mon.scale}, mirror, {mon.mirror_of}"
         mode_str = f"{mon.width}x{mon.height}@{mon.refresh_rate:.2f}"
         pos_str = f"{mon.x}x{mon.y}"
-        return f"monitor = {mon.name}, {mode_str}, {pos_str}, {mon.scale}, transform, {mon.transform}, bitdepth, {mon.bitdepth}, vrr, {mon.vrr}"
+
+        if mon.icc_profile:
+            cm_part = f", icc, {mon.icc_profile}"
+        else:
+            cm_part = f", cm, {mon.cm}, sdrbrightness, {mon.sdr_brightness:.2f}, sdrsaturation, {mon.sdr_saturation:.2f}"
+
+        return f"monitor = {mon.name}, {mode_str}, {pos_str}, {mon.scale}, transform, {mon.transform}, bitdepth, {mon.bitdepth}, vrr, {mon.vrr}{cm_part}"
 
     def apply_monitor(self, mon: MonitorInfo) -> bool:
         success = True
@@ -226,7 +261,6 @@ class DisplayManager:
             if res.returncode != 0:
                 success = False
 
-            # Apply workspace bindings
             for ws in mon.bound_workspaces:
                 ws_cmd = f"hl.workspace_rule({{ workspace = '{ws}', monitor = '{mon.name}' }})"
                 subprocess.run(["hyprctl", "eval", ws_cmd], capture_output=True)

@@ -1,3 +1,4 @@
+import os
 import copy
 from typing import List, Tuple, Dict, Optional
 import gi
@@ -13,7 +14,8 @@ from mannux.backend.display import (
     TRANSFORM_OPTIONS,
     SCALE_PRESETS,
     BITDEPTH_OPTIONS,
-    VRR_OPTIONS
+    VRR_OPTIONS,
+    CM_PRESETS
 )
 from mannux.backend.logger import log
 
@@ -34,7 +36,6 @@ class DisplaysPage(BasePage):
         self._revert_timer_id: Optional[int] = None
         self._revert_seconds_left: int = 15
         self._revert_dialog: Optional[Adw.AlertDialog] = None
-        self._ws_buttons: Dict[int, Gtk.ToggleButton] = {}
 
         self._build_ui()
         self.refresh_monitors()
@@ -45,7 +46,7 @@ class DisplaysPage(BasePage):
         # -------------------------------------------------------------
         self.header_group = Adw.PreferencesGroup()
         self.header_group.set_title("Connected Displays")
-        self.header_group.set_description("Manage screen resolution, scaling, orientation, color depth, and VRR")
+        self.header_group.set_description("Manage screen resolution, scaling, orientation, color profiles, and VRR")
         self.add(self.header_group)
 
         self.selector_row = Adw.ComboRow()
@@ -148,36 +149,48 @@ class DisplaysPage(BasePage):
         self.props_group.add(self.vrr_combo)
 
         # -------------------------------------------------------------
-        # 3. Workspace Binding Group
+        # 3. Color Management & HDR
         # -------------------------------------------------------------
-        self.ws_group = Adw.PreferencesGroup()
-        self.ws_group.set_title("Workspace Assignments")
-        self.ws_group.set_description("Pin virtual workspaces directly to this display")
-        self.add(self.ws_group)
+        self.cm_group = Adw.PreferencesGroup()
+        self.cm_group.set_title("Color Management & HDR")
+        self.cm_group.set_description("Configure color profiles, wide gamut, and HDR tone mapping")
+        self.add(self.cm_group)
 
-        self.ws_expander = Adw.ExpanderRow()
-        self.ws_expander.set_title("Assigned Workspaces")
-        self.ws_expander.set_subtitle("Select default workspaces for this monitor")
-        self.ws_expander.set_icon_name("view-paged-symbolic")
+        # Color profile preset
+        cm_model = Gtk.StringList.new([c[0] for c in CM_PRESETS])
+        self.cm_combo = Adw.ComboRow()
+        self.cm_combo.set_title("Color Profile (Color Space)")
+        self.cm_combo.set_subtitle("Color management gamut preset")
+        self.cm_combo.set_model(cm_model)
+        self.cm_combo.connect("notify::selected", self._on_cm_selected)
+        self.cm_group.add(self.cm_combo)
 
-        # Horizontal Box for workspace toggle buttons 1..10
-        ws_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        ws_box.set_halign(Gtk.Align.CENTER)
-        ws_box.set_margin_top(12)
-        ws_box.set_margin_bottom(12)
-        ws_box.set_margin_start(12)
-        ws_box.set_margin_end(12)
+        # Custom ICC Profile Row
+        self.icc_row = Adw.ActionRow()
+        self.icc_row.set_title("ICC Color Calibration File")
+        self.icc_row.set_subtitle("No ICC file selected (Standard primaries)")
+        self.icc_row.set_visible(False)
 
-        self._ws_buttons = {}
-        for num in range(1, 11):
-            btn = Gtk.ToggleButton(label=str(num))
-            btn.set_size_request(38, 38)
-            btn.connect("toggled", lambda b, n=num: self._on_ws_toggled(n, b.get_active()))
-            ws_box.append(btn)
-            self._ws_buttons[num] = btn
+        icc_btn = Gtk.Button(label="Select Profile...")
+        icc_btn.set_icon_name("document-open-symbolic")
+        icc_btn.set_valign(Gtk.Align.CENTER)
+        icc_btn.connect("clicked", self._on_select_icc_clicked)
+        self.icc_row.add_suffix(icc_btn)
+        self.cm_group.add(self.icc_row)
 
-        self.ws_expander.add_row(ws_box)
-        self.ws_group.add(self.ws_expander)
+        # SDR Brightness in HDR mode
+        self.sdr_bright_spin = Adw.SpinRow.new_with_range(0.5, 3.0, 0.05)
+        self.sdr_bright_spin.set_title("SDR Content Brightness (HDR)")
+        self.sdr_bright_spin.set_subtitle("Multiplier for standard dynamic range content under HDR")
+        self.sdr_bright_spin.connect("notify::value", lambda w, p: self._on_setting_changed())
+        self.cm_group.add(self.sdr_bright_spin)
+
+        # SDR Saturation in HDR mode
+        self.sdr_sat_spin = Adw.SpinRow.new_with_range(0.5, 2.0, 0.05)
+        self.sdr_sat_spin.set_title("SDR Content Saturation (HDR)")
+        self.sdr_sat_spin.set_subtitle("Color vibrancy multiplier for SDR content")
+        self.sdr_sat_spin.connect("notify::value", lambda w, p: self._on_setting_changed())
+        self.cm_group.add(self.sdr_sat_spin)
 
         # -------------------------------------------------------------
         # 4. Apply Action Row
@@ -205,7 +218,7 @@ class DisplaysPage(BasePage):
 
         self.preview_expander = Adw.ExpanderRow()
         self.preview_expander.set_title("View Monitor Configuration")
-        self.preview_expander.set_subtitle("Inspect generated Hyprland monitor and workspace syntax")
+        self.preview_expander.set_subtitle("Inspect generated Hyprland monitor syntax")
         self.preview_expander.set_icon_name("text-x-generic-symbolic")
 
         preview_scroller = Gtk.ScrolledWindow()
@@ -235,13 +248,13 @@ class DisplaysPage(BasePage):
             self.summary_row.set_title("No Monitors Detected")
             self.summary_row.set_subtitle("Ensure Hyprland is active")
             self.props_group.set_sensitive(False)
+            self.cm_group.set_sensitive(False)
             self.actions_group.set_sensitive(False)
-            self.ws_group.set_sensitive(False)
             return
 
         self.props_group.set_sensitive(True)
+        self.cm_group.set_sensitive(True)
         self.actions_group.set_sensitive(True)
-        self.ws_group.set_sensitive(True)
 
         self._updating_ui = True
         titles = []
@@ -352,9 +365,22 @@ class DisplaysPage(BasePage):
                 break
         self.vrr_combo.set_selected(vrr_idx)
 
-        # Workspaces
-        for num, btn in self._ws_buttons.items():
-            btn.set_active(num in mon.bound_workspaces)
+        # Color Management
+        cm_idx = 0
+        if mon.icc_profile:
+            cm_idx = len(CM_PRESETS) - 1 # Custom ICC
+        else:
+            for idx, (_, val) in enumerate(CM_PRESETS[:-1]):
+                if val == mon.cm:
+                    cm_idx = idx
+                    break
+        self.cm_combo.set_selected(cm_idx)
+        self.icc_row.set_visible(cm_idx == len(CM_PRESETS) - 1)
+        if mon.icc_profile:
+            self.icc_row.set_subtitle(mon.icc_profile)
+
+        self.sdr_bright_spin.set_value(mon.sdr_brightness)
+        self.sdr_sat_spin.set_value(mon.sdr_saturation)
 
         self._updating_ui = False
 
@@ -371,20 +397,39 @@ class DisplaysPage(BasePage):
                 break
         self.rate_combo.set_selected(curr_rate_idx)
 
-    def _on_ws_toggled(self, num: int, is_active: bool):
+    def _on_cm_selected(self, combo, param):
         if self._updating_ui:
             return
-        mon = self._get_current_monitor()
-        if not mon:
-            return
+        idx = combo.get_selected()
+        is_icc = (idx == len(CM_PRESETS) - 1)
+        self.icc_row.set_visible(is_icc)
+        self._on_setting_changed()
 
-        if is_active and num not in mon.bound_workspaces:
-            mon.bound_workspaces.append(num)
-            mon.bound_workspaces.sort()
-        elif not is_active and num in mon.bound_workspaces:
-            mon.bound_workspaces.remove(num)
+    def _on_select_icc_clicked(self, widget):
+        dialog = Gtk.FileDialog.new()
+        dialog.set_title("Select ICC/ICM Color Profile")
+        filter_icc = Gtk.FileFilter()
+        filter_icc.set_name("Color Profiles (*.icc, *.icm)")
+        filter_icc.add_pattern("*.icc")
+        filter_icc.add_pattern("*.icm")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(filter_icc)
+        dialog.set_filters(filters)
 
-        self._update_preview()
+        def on_open_finish(d, result):
+            try:
+                gfile = d.open_finish(result)
+                if gfile:
+                    path = gfile.get_path()
+                    mon = self._get_current_monitor()
+                    if mon and path:
+                        mon.icc_profile = path
+                        self.icc_row.set_subtitle(path)
+                        self._update_preview()
+            except Exception as e:
+                log.warning(f"File dialog cancelled or error: {e}")
+
+        dialog.open(self.get_root(), None, on_open_finish)
 
     def _on_monitor_selected(self, combo, param):
         if self._updating_ui:
@@ -469,6 +514,16 @@ class DisplaysPage(BasePage):
         vrr_idx = self.vrr_combo.get_selected()
         if 0 <= vrr_idx < len(VRR_OPTIONS):
             mon.vrr = VRR_OPTIONS[vrr_idx][1]
+
+        cm_idx = self.cm_combo.get_selected()
+        if cm_idx == len(CM_PRESETS) - 1: # Custom ICC
+            pass
+        elif 0 <= cm_idx < len(CM_PRESETS) - 1:
+            mon.cm = CM_PRESETS[cm_idx][1]
+            mon.icc_profile = ""
+
+        mon.sdr_brightness = float(self.sdr_bright_spin.get_value())
+        mon.sdr_saturation = float(self.sdr_sat_spin.get_value())
 
         self._update_preview()
 
