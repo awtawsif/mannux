@@ -17,6 +17,8 @@ A modern, fast GTK4 + Libadwaita settings application and CLI for Arch Linux run
 - **Screen & Power Management**:
   - **Dual Power Profiles**: Separate, customizable timeouts for **On Battery** and **Plugged In (AC Power)**.
   - **Segmented Profile Switcher**: Interactive switcher with real-time active power state indicator.
+  - **Display Wake Triggers**: Configure display wake on mouse movement (`misc:mouse_move_enables_dpms`) and keyboard key press (`misc:key_press_enables_dpms`).
+  - **Laptop Lid Switch Handling**: Customizable clamshell and lid actions (`Suspend`, `Lock`, `Turn Off Screen (DPMS)`, `Ignore`).
   - **Screen Dimming**: Configurable timeout (presets + custom seconds) and exact brightness percentage control.
   - **Screen Off (DPMS)**: Display power management timeout (`hyprctl dispatch dpms off/on`).
   - **Automatic Session Lock**: Configurable idle lock delay (`hyprlock` integration).
@@ -26,6 +28,9 @@ A modern, fast GTK4 + Libadwaita settings application and CLI for Arch Linux run
 - **Hypridle Integration & Daemon Supervision**:
   - Live status badge showing daemon health (🟢 Running with PID/systemd, 🔴 Stopped, ⚠️ Missing).
   - One-click Start / Restart button.
+  - Extended inhibitor flags: D-Bus, Systemd, and Wayland idle inhibitor toggles (`ignore_wayland_inhibit`).
+  - Configurable sleep coordination mode (`inhibit_sleep`: disabled, wait for command, auto/hyprlock, wait until locked).
+  - Comprehensive session commands: `lock_cmd`, `unlock_cmd`, `before_sleep_cmd`, `after_sleep_cmd`, `on_lock_cmd`, `on_unlock_cmd`.
   - Automatic synchronization and backup of `~/.config/hypr/hypridle.conf`.
   - Live syntax-highlighted code preview drawer for `hypridle.conf`.
 - **Scriptable Headless CLI (Waybar / Hotkeys)**:

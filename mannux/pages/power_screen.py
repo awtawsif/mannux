@@ -3,9 +3,10 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, GLib, Pango
 from .base import BasePage
-from mannux.backend.config import ConfigManager, PowerProfileConfig
+from mannux.backend.config import ConfigManager, PowerProfileConfig, HyprlandPowerConfig
 from mannux.backend.power import PowerManager, PowerStatus
 from mannux.backend.hypridle import HypridleSync, DaemonStatus
+from mannux.backend.hyprland_power import HyprlandPowerSync, LID_ACTIONS
 from mannux.backend.logger import log
 
 TIMEOUT_PRESETS = [
@@ -26,6 +27,13 @@ TIMEOUT_PRESETS = [
     ("Custom...", -1),
 ]
 
+INHIBIT_SLEEP_OPTIONS = [
+    ("0 - Disabled (no sleep delay)", 0),
+    ("1 - Wait for Before-Sleep Command", 1),
+    ("2 - Auto / Locker (Recommended)", 2),
+    ("3 - Wait until Screen Locked", 3),
+]
+
 def find_timeout_index(seconds: int) -> int:
     for i, (_, s) in enumerate(TIMEOUT_PRESETS[:-1]):
         if s == seconds:
@@ -40,6 +48,7 @@ class PowerScreenPage(BasePage):
     def __init__(self, config_mgr: ConfigManager, power_mgr: PowerManager, hypridle_sync: HypridleSync, toast_callback=None, **kwargs):
         super().__init__(config_mgr, power_mgr, **kwargs)
         self.hypridle_sync = hypridle_sync
+        self.hyprland_power_sync = HyprlandPowerSync.get_instance()
         self.toast_callback = toast_callback
         self._updating_ui = False
 
@@ -57,7 +66,7 @@ class PowerScreenPage(BasePage):
         # 1. System Status & Quick Controls
         # -------------------------------------------------------------
         self.status_group = Adw.PreferencesGroup()
-        self.status_group.set_title("System Status & Controls")
+        self.status_group.set_title("System Status &amp; Controls")
         self.add(self.status_group)
 
         # Power Source Row
@@ -118,7 +127,44 @@ class PowerScreenPage(BasePage):
         self.profiles_group.add(self.profile_stack)
 
         # -------------------------------------------------------------
-        # 3. Advanced Settings (Expandable at Bottom)
+        # 3. Display Wake & Hardware Controls
+        # -------------------------------------------------------------
+        self.wake_group = Adw.PreferencesGroup()
+        self.wake_group.set_title("Display Wake &amp; Hardware")
+        self.wake_group.set_description("Configure display wake triggers and laptop lid switch behavior")
+        self.add(self.wake_group)
+
+        # Mouse Move Wake Row
+        self.mouse_wake_row = Adw.SwitchRow()
+        self.mouse_wake_row.set_title("Wake Display on Mouse Movement")
+        self.mouse_wake_row.set_subtitle("Turn monitors back on from standby when mouse is moved (misc:mouse_move_enables_dpms)")
+        self.mouse_wake_row.set_icon_name("input-mouse-symbolic")
+        self.mouse_wake_row.connect("notify::active", lambda w, p: self._save_to_config())
+        self.wake_group.add(self.mouse_wake_row)
+
+        # Keyboard Wake Row
+        self.key_wake_row = Adw.SwitchRow()
+        self.key_wake_row.set_title("Wake Display on Key Press")
+        self.key_wake_row.set_subtitle("Turn monitors back on from standby when any keyboard key is pressed (misc:key_press_enables_dpms)")
+        self.key_wake_row.set_icon_name("input-keyboard-symbolic")
+        self.key_wake_row.connect("notify::active", lambda w, p: self._save_to_config())
+        self.wake_group.add(self.key_wake_row)
+
+        # Laptop Lid Switch Row
+        if self.hyprland_power_sync.has_lid_switch() or self.power_mgr.get_status().has_battery:
+            lid_model = Gtk.StringList.new([item[0] for item in LID_ACTIONS])
+            self.lid_action_combo = Adw.ComboRow()
+            self.lid_action_combo.set_title("Laptop Lid Close Action")
+            self.lid_action_combo.set_subtitle("Action executed by compositor when laptop display lid is closed")
+            self.lid_action_combo.set_icon_name("preferences-system-windows-symbolic")
+            self.lid_action_combo.set_model(lid_model)
+            self.lid_action_combo.connect("notify::selected", lambda w, p: self._save_to_config())
+            self.wake_group.add(self.lid_action_combo)
+        else:
+            self.lid_action_combo = None
+
+        # -------------------------------------------------------------
+        # 4. Advanced Settings (Expandable at Bottom)
         # -------------------------------------------------------------
         self.advanced_group = Adw.PreferencesGroup()
         self.advanced_group.set_title("Advanced")
@@ -138,6 +184,11 @@ class PowerScreenPage(BasePage):
         self.lock_cmd_row.connect("changed", lambda w: self._save_to_config())
         self.advanced_expander.add_row(self.lock_cmd_row)
 
+        self.unlock_cmd_row = Adw.EntryRow()
+        self.unlock_cmd_row.set_title("Unlock Command")
+        self.unlock_cmd_row.connect("changed", lambda w: self._save_to_config())
+        self.advanced_expander.add_row(self.unlock_cmd_row)
+
         self.before_sleep_cmd_row = Adw.EntryRow()
         self.before_sleep_cmd_row.set_title("Before Sleep Command")
         self.before_sleep_cmd_row.connect("changed", lambda w: self._save_to_config())
@@ -148,9 +199,19 @@ class PowerScreenPage(BasePage):
         self.after_sleep_cmd_row.connect("changed", lambda w: self._save_to_config())
         self.advanced_expander.add_row(self.after_sleep_cmd_row)
 
+        self.on_lock_cmd_row = Adw.EntryRow()
+        self.on_lock_cmd_row.set_title("On Lock Command")
+        self.on_lock_cmd_row.connect("changed", lambda w: self._save_to_config())
+        self.advanced_expander.add_row(self.on_lock_cmd_row)
+
+        self.on_unlock_cmd_row = Adw.EntryRow()
+        self.on_unlock_cmd_row.set_title("On Unlock Command")
+        self.on_unlock_cmd_row.connect("changed", lambda w: self._save_to_config())
+        self.advanced_expander.add_row(self.on_unlock_cmd_row)
+
         # --- B. Hypridle Daemon Options ---
         self.auto_sync_row = Adw.SwitchRow()
-        self.auto_sync_row.set_title("Automatic Sync & Reload")
+        self.auto_sync_row.set_title("Automatic Sync &amp; Reload")
         self.auto_sync_row.set_subtitle("Instantly write ~/.config/hypr/hypridle.conf on change")
         self.auto_sync_row.connect("notify::active", lambda w, p: self._save_to_config())
         self.advanced_expander.add_row(self.auto_sync_row)
@@ -167,9 +228,23 @@ class PowerScreenPage(BasePage):
         self.ignore_systemd_row.connect("notify::active", lambda w, p: self._save_to_config())
         self.advanced_expander.add_row(self.ignore_systemd_row)
 
+        self.ignore_wayland_row = Adw.SwitchRow()
+        self.ignore_wayland_row.set_title("Ignore Wayland Inhibitors")
+        self.ignore_wayland_row.set_subtitle("Ignore Wayland idle inhibit protocol requests")
+        self.ignore_wayland_row.connect("notify::active", lambda w, p: self._save_to_config())
+        self.advanced_expander.add_row(self.ignore_wayland_row)
+
+        sleep_model = Gtk.StringList.new([item[0] for item in INHIBIT_SLEEP_OPTIONS])
+        self.inhibit_sleep_combo = Adw.ComboRow()
+        self.inhibit_sleep_combo.set_title("Sleep Inhibition Mode")
+        self.inhibit_sleep_combo.set_subtitle("Behavior when system receives sleep event from logind")
+        self.inhibit_sleep_combo.set_model(sleep_model)
+        self.inhibit_sleep_combo.connect("notify::selected", lambda w, p: self._save_to_config())
+        self.advanced_expander.add_row(self.inhibit_sleep_combo)
+
         # Force sync action row
         apply_row = Adw.ActionRow()
-        apply_row.set_title("Force Apply & Restart Daemon")
+        apply_row.set_title("Force Apply &amp; Restart Daemon")
         apply_row.set_subtitle("Manually regenerate hypridle.conf and restart background process")
         apply_btn = Gtk.Button(label="Apply Now")
         apply_btn.set_valign(Gtk.Align.CENTER)
@@ -413,11 +488,30 @@ class PowerScreenPage(BasePage):
 
         self.inhibit_row.set_active(cfg.general.inhibit_idle)
         self.lock_cmd_row.set_text(cfg.general.lock_cmd)
+        self.unlock_cmd_row.set_text(cfg.general.unlock_cmd)
         self.before_sleep_cmd_row.set_text(cfg.general.before_sleep_cmd)
         self.after_sleep_cmd_row.set_text(cfg.general.after_sleep_cmd)
+        self.on_lock_cmd_row.set_text(cfg.general.on_lock_cmd)
+        self.on_unlock_cmd_row.set_text(cfg.general.on_unlock_cmd)
+
         self.auto_sync_row.set_active(cfg.general.auto_sync_hypridle)
         self.ignore_dbus_row.set_active(cfg.general.ignore_dbus_inhibit)
         self.ignore_systemd_row.set_active(cfg.general.ignore_systemd_inhibit)
+        self.ignore_wayland_row.set_active(cfg.general.ignore_wayland_inhibit)
+
+        sleep_idx = max(0, min(3, cfg.general.inhibit_sleep))
+        self.inhibit_sleep_combo.set_selected(sleep_idx)
+
+        # Hyprland display wake & lid
+        self.mouse_wake_row.set_active(cfg.hyprland.mouse_move_enables_dpms)
+        self.key_wake_row.set_active(cfg.hyprland.key_press_enables_dpms)
+        if self.lid_action_combo:
+            lid_idx = 0
+            for idx, (_, act) in enumerate(LID_ACTIONS):
+                if act == cfg.hyprland.lid_switch_action:
+                    lid_idx = idx
+                    break
+            self.lid_action_combo.set_selected(lid_idx)
 
         self._load_profile_widgets(cfg.battery, self.bat_widgets)
         self._load_profile_widgets(cfg.ac, self.ac_widgets)
@@ -458,17 +552,33 @@ class PowerScreenPage(BasePage):
         cfg = self.config_mgr.config
         cfg.general.inhibit_idle = self.inhibit_row.get_active()
         cfg.general.lock_cmd = self.lock_cmd_row.get_text() or "pidof hyprlock || hyprlock"
+        cfg.general.unlock_cmd = self.unlock_cmd_row.get_text()
         cfg.general.before_sleep_cmd = self.before_sleep_cmd_row.get_text() or "loginctl lock-session"
         cfg.general.after_sleep_cmd = self.after_sleep_cmd_row.get_text() or "hyprctl dispatch dpms on"
+        cfg.general.on_lock_cmd = self.on_lock_cmd_row.get_text()
+        cfg.general.on_unlock_cmd = self.on_unlock_cmd_row.get_text()
+
         cfg.general.auto_sync_hypridle = self.auto_sync_row.get_active()
         cfg.general.ignore_dbus_inhibit = self.ignore_dbus_row.get_active()
         cfg.general.ignore_systemd_inhibit = self.ignore_systemd_row.get_active()
+        cfg.general.ignore_wayland_inhibit = self.ignore_wayland_row.get_active()
+        cfg.general.inhibit_sleep = self.inhibit_sleep_combo.get_selected()
+
+        # Hyprland power settings
+        cfg.hyprland.mouse_move_enables_dpms = self.mouse_wake_row.get_active()
+        cfg.hyprland.key_press_enables_dpms = self.key_wake_row.get_active()
+        if self.lid_action_combo:
+            sel_idx = self.lid_action_combo.get_selected()
+            if 0 <= sel_idx < len(LID_ACTIONS):
+                cfg.hyprland.lid_switch_action = LID_ACTIONS[sel_idx][1]
 
         self._save_profile_widgets(cfg.battery, self.bat_widgets)
         self._save_profile_widgets(cfg.ac, self.ac_widgets)
 
         self.config_mgr.save()
         self._update_preview()
+
+        self.hyprland_power_sync.sync_and_apply(cfg.hyprland)
 
         if cfg.general.auto_sync_hypridle:
             self.hypridle_sync.sync_and_reload(cfg)
@@ -508,10 +618,11 @@ class PowerScreenPage(BasePage):
 
     def _on_apply_clicked(self, widget):
         self._save_to_config()
+        self.hyprland_power_sync.sync_and_apply(self.config_mgr.config.hyprland)
         success = self.hypridle_sync.sync_and_reload(self.config_mgr.config)
         self._update_daemon_status()
         if self.toast_callback:
-            self.toast_callback("Configuration synchronized & daemon reloaded!" if success else "Failed to reload hypridle")
+            self.toast_callback("Configuration synchronized & applied!" if success else "Failed to reload hypridle")
 
     def _on_restore_clicked(self, widget):
         dialog = Adw.AlertDialog.new(
@@ -559,6 +670,7 @@ class PowerScreenPage(BasePage):
             if resp == "reset":
                 self.config_mgr.reset_to_defaults()
                 self._load_from_config()
+                self.hyprland_power_sync.sync_and_apply(self.config_mgr.config.hyprland)
                 self.hypridle_sync.sync_and_reload(self.config_mgr.config)
                 if self.toast_callback:
                     self.toast_callback("Settings reset to factory defaults!")

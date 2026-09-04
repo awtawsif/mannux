@@ -90,3 +90,22 @@ def test_advanced_inhibitors_and_commands():
     assert "after_sleep_cmd = brightnessctl -r" in content
     assert "ignore_dbus_inhibit = true" in content
     assert "ignore_systemd_inhibit = true" in content
+    assert "ignore_wayland_inhibit = false" in content
+    assert "inhibit_sleep = 2" in content
+
+def test_full_new_hypridle_options():
+    mock_power = MockPowerManager(has_battery=False, on_ac=True)
+    sync = HypridleSync(power_mgr=mock_power)
+    cfg = AppConfig()
+    cfg.general.unlock_cmd = "pkill -SIGUSR1 waybar"
+    cfg.general.on_lock_cmd = "notify-send 'Locked'"
+    cfg.general.on_unlock_cmd = "notify-send 'Unlocked'"
+    cfg.general.ignore_wayland_inhibit = True
+    cfg.general.inhibit_sleep = 3
+
+    content = sync.generate_config(cfg)
+    assert "unlock_cmd = pkill -SIGUSR1 waybar" in content
+    assert "on_lock_cmd = notify-send 'Locked'" in content
+    assert "on_unlock_cmd = notify-send 'Unlocked'" in content
+    assert "ignore_wayland_inhibit = true" in content
+    assert "inhibit_sleep = 3" in content

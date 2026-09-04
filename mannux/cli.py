@@ -90,6 +90,10 @@ def handle_cli_commands(args: argparse.Namespace) -> Optional[int]:
             "hypridle_running": daemon.is_running,
             "hypridle_pid": daemon.pid,
             "hypridle_description": daemon.description,
+            "mouse_move_enables_dpms": config_mgr.config.hyprland.mouse_move_enables_dpms,
+            "key_press_enables_dpms": config_mgr.config.hyprland.key_press_enables_dpms,
+            "lid_switch_action": config_mgr.config.hyprland.lid_switch_action,
+            "inhibit_sleep": config_mgr.config.general.inhibit_sleep,
         }
 
         if args.json:
@@ -101,6 +105,9 @@ def handle_cli_commands(args: argparse.Namespace) -> Optional[int]:
                 print(f"Battery Level      : {power.battery_percentage}% ({power.battery_state})")
             print(f"Keep Awake Mode    : {'ACTIVE (Inhibited)' if inhibit else 'Disabled'}")
             print(f"Hypridle Daemon    : {daemon.description}")
+            print(f"Wake on Mouse Move : {'Enabled' if data['mouse_move_enables_dpms'] else 'Disabled'}")
+            print(f"Wake on Key Press  : {'Enabled' if data['key_press_enables_dpms'] else 'Disabled'}")
+            print(f"Lid Close Action   : {data['lid_switch_action']}")
         return 0
 
     if args.monitors:

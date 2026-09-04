@@ -85,6 +85,8 @@ class HypridleSync:
 
         ignore_dbus = "true" if config.general.ignore_dbus_inhibit else "false"
         ignore_systemd = "true" if config.general.ignore_systemd_inhibit else "false"
+        ignore_wayland = "true" if config.general.ignore_wayland_inhibit else "false"
+        inhibit_sleep = config.general.inhibit_sleep
 
         lines = [
             "# ====================================================================",
@@ -94,13 +96,23 @@ class HypridleSync:
             "",
             "general {",
             f"    lock_cmd = {config.general.lock_cmd}",
-            f"    before_sleep_cmd = {config.general.before_sleep_cmd}",
-            f"    after_sleep_cmd = {config.general.after_sleep_cmd}",
+        ]
+        if config.general.unlock_cmd:
+            lines.append(f"    unlock_cmd = {config.general.unlock_cmd}")
+        lines.append(f"    before_sleep_cmd = {config.general.before_sleep_cmd}")
+        lines.append(f"    after_sleep_cmd = {config.general.after_sleep_cmd}")
+        if config.general.on_lock_cmd:
+            lines.append(f"    on_lock_cmd = {config.general.on_lock_cmd}")
+        if config.general.on_unlock_cmd:
+            lines.append(f"    on_unlock_cmd = {config.general.on_unlock_cmd}")
+        lines.extend([
             f"    ignore_dbus_inhibit = {ignore_dbus}",
             f"    ignore_systemd_inhibit = {ignore_systemd}",
+            f"    ignore_wayland_inhibit = {ignore_wayland}",
+            f"    inhibit_sleep = {inhibit_sleep}",
             "}",
             ""
-        ]
+        ])
 
         if config.general.inhibit_idle:
             lines.append("# ====================================================================")

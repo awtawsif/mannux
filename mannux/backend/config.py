@@ -22,17 +22,29 @@ class PowerProfileConfig:
 @dataclass
 class GeneralConfig:
     lock_cmd: str = "pidof hyprlock || hyprlock"
+    unlock_cmd: str = ""
     before_sleep_cmd: str = "loginctl lock-session"
     after_sleep_cmd: str = "hyprctl dispatch dpms on"
+    on_lock_cmd: str = ""
+    on_unlock_cmd: str = ""
     inhibit_idle: bool = False
     auto_sync_hypridle: bool = True
     ignore_dbus_inhibit: bool = False
     ignore_systemd_inhibit: bool = False
+    ignore_wayland_inhibit: bool = False
+    inhibit_sleep: int = 2
+
+@dataclass
+class HyprlandPowerConfig:
+    mouse_move_enables_dpms: bool = False
+    key_press_enables_dpms: bool = False
+    lid_switch_action: str = "ignore"  # "ignore", "suspend", "lock", "dpms_off"
 
 @dataclass
 class AppConfig:
     version: int = 1
     general: GeneralConfig = field(default_factory=GeneralConfig)
+    hyprland: HyprlandPowerConfig = field(default_factory=HyprlandPowerConfig)
     battery: PowerProfileConfig = field(default_factory=lambda: PowerProfileConfig(
         dim_enabled=True,
         dim_timeout=150,
@@ -108,10 +120,12 @@ class ConfigManager:
             gen_data = data.get("general", {})
             bat_data = data.get("battery", {})
             ac_data = data.get("ac", {})
+            hypr_data = data.get("hyprland", {})
 
             self._config = AppConfig(
                 version=data.get("version", 1),
                 general=GeneralConfig(**{k: v for k, v in gen_data.items() if k in GeneralConfig.__annotations__}),
+                hyprland=HyprlandPowerConfig(**{k: v for k, v in hypr_data.items() if k in HyprlandPowerConfig.__annotations__}),
                 battery=PowerProfileConfig(**{k: v for k, v in bat_data.items() if k in PowerProfileConfig.__annotations__}),
                 ac=PowerProfileConfig(**{k: v for k, v in ac_data.items() if k in PowerProfileConfig.__annotations__}),
             )
