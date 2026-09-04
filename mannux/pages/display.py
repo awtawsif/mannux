@@ -11,7 +11,9 @@ from mannux.backend.display import (
     DisplayManager,
     MonitorInfo,
     TRANSFORM_OPTIONS,
-    SCALE_PRESETS
+    SCALE_PRESETS,
+    BITDEPTH_OPTIONS,
+    VRR_OPTIONS
 )
 from mannux.backend.logger import log
 
@@ -32,27 +34,26 @@ class DisplaysPage(BasePage):
         self._revert_timer_id: Optional[int] = None
         self._revert_seconds_left: int = 15
         self._revert_dialog: Optional[Adw.AlertDialog] = None
+        self._ws_buttons: Dict[int, Gtk.ToggleButton] = {}
 
         self._build_ui()
         self.refresh_monitors()
 
     def _build_ui(self):
         # -------------------------------------------------------------
-        # 1. Monitor Header & Multi-Monitor Switcher
+        # 1. Connected Displays Header & Selector
         # -------------------------------------------------------------
         self.header_group = Adw.PreferencesGroup()
         self.header_group.set_title("Connected Displays")
-        self.header_group.set_description("Manage screen resolution, fractional scaling, and orientation")
+        self.header_group.set_description("Manage screen resolution, scaling, orientation, color depth, and VRR")
         self.add(self.header_group)
 
-        # Multi-monitor selector row
         self.selector_row = Adw.ComboRow()
         self.selector_row.set_title("Active Display")
         self.selector_row.set_subtitle("Select which monitor to configure")
         self.selector_row.connect("notify::selected", self._on_monitor_selected)
         self.header_group.add(self.selector_row)
 
-        # Display Summary Card
         self.summary_row = Adw.ActionRow()
         self.summary_row.set_title("Detecting display...")
         self.summary_row.set_subtitle("Querying Hyprland IPC...")
@@ -67,10 +68,10 @@ class DisplaysPage(BasePage):
         self.header_group.add(self.summary_row)
 
         # -------------------------------------------------------------
-        # 2. Display Configuration Properties
+        # 2. Display Properties
         # -------------------------------------------------------------
         self.props_group = Adw.PreferencesGroup()
-        self.props_group.set_title("Display Settings")
+        self.props_group.set_title("Display Properties")
         self.add(self.props_group)
 
         # Enable/Disable switch
@@ -80,6 +81,13 @@ class DisplaysPage(BasePage):
         self.enable_switch.set_icon_name("display-brightness-symbolic")
         self.enable_switch.connect("notify::active", lambda w, p: self._on_setting_changed())
         self.props_group.add(self.enable_switch)
+
+        # Mirroring row
+        self.mirror_combo = Adw.ComboRow()
+        self.mirror_combo.set_title("Mirror Display")
+        self.mirror_combo.set_subtitle("Clone output from another display")
+        self.mirror_combo.connect("notify::selected", lambda w, p: self._on_setting_changed())
+        self.props_group.add(self.mirror_combo)
 
         # Resolution dropdown
         self.res_combo = Adw.ComboRow()
@@ -91,7 +99,7 @@ class DisplaysPage(BasePage):
         # Refresh Rate dropdown
         self.rate_combo = Adw.ComboRow()
         self.rate_combo.set_title("Refresh Rate")
-        self.rate_combo.set_subtitle("Display frame rate in Hertz (Hz)")
+        self.rate_combo.set_subtitle("Display refresh frequency in Hertz (Hz)")
         self.rate_combo.connect("notify::selected", lambda w, p: self._on_setting_changed())
         self.props_group.add(self.rate_combo)
 
@@ -121,15 +129,58 @@ class DisplaysPage(BasePage):
         self.transform_combo.connect("notify::selected", lambda w, p: self._on_setting_changed())
         self.props_group.add(self.transform_combo)
 
-        # Adaptive Sync (VRR)
-        self.vrr_switch = Adw.SwitchRow()
-        self.vrr_switch.set_title("Variable Refresh Rate (VRR / FreeSync)")
-        self.vrr_switch.set_subtitle("Dynamically match monitor refresh rate to GPU frames")
-        self.vrr_switch.connect("notify::active", lambda w, p: self._on_setting_changed())
-        self.props_group.add(self.vrr_switch)
+        # Color Depth / Bit Depth
+        bitdepth_model = Gtk.StringList.new([b[0] for b in BITDEPTH_OPTIONS])
+        self.bitdepth_combo = Adw.ComboRow()
+        self.bitdepth_combo.set_title("Color Depth")
+        self.bitdepth_combo.set_subtitle("Pixel color bit depth")
+        self.bitdepth_combo.set_model(bitdepth_model)
+        self.bitdepth_combo.connect("notify::selected", lambda w, p: self._on_setting_changed())
+        self.props_group.add(self.bitdepth_combo)
+
+        # Advanced VRR
+        vrr_model = Gtk.StringList.new([v[0] for v in VRR_OPTIONS])
+        self.vrr_combo = Adw.ComboRow()
+        self.vrr_combo.set_title("Variable Refresh Rate (VRR / FreeSync)")
+        self.vrr_combo.set_subtitle("Adaptive sync frame delivery mode")
+        self.vrr_combo.set_model(vrr_model)
+        self.vrr_combo.connect("notify::selected", lambda w, p: self._on_setting_changed())
+        self.props_group.add(self.vrr_combo)
 
         # -------------------------------------------------------------
-        # 3. Apply Action Row
+        # 3. Workspace Binding Group
+        # -------------------------------------------------------------
+        self.ws_group = Adw.PreferencesGroup()
+        self.ws_group.set_title("Workspace Assignments")
+        self.ws_group.set_description("Pin virtual workspaces directly to this display")
+        self.add(self.ws_group)
+
+        self.ws_expander = Adw.ExpanderRow()
+        self.ws_expander.set_title("Assigned Workspaces")
+        self.ws_expander.set_subtitle("Select default workspaces for this monitor")
+        self.ws_expander.set_icon_name("view-paged-symbolic")
+
+        # Horizontal Box for workspace toggle buttons 1..10
+        ws_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        ws_box.set_halign(Gtk.Align.CENTER)
+        ws_box.set_margin_top(12)
+        ws_box.set_margin_bottom(12)
+        ws_box.set_margin_start(12)
+        ws_box.set_margin_end(12)
+
+        self._ws_buttons = {}
+        for num in range(1, 11):
+            btn = Gtk.ToggleButton(label=str(num))
+            btn.set_size_request(38, 38)
+            btn.connect("toggled", lambda b, n=num: self._on_ws_toggled(n, b.get_active()))
+            ws_box.append(btn)
+            self._ws_buttons[num] = btn
+
+        self.ws_expander.add_row(ws_box)
+        self.ws_group.add(self.ws_expander)
+
+        # -------------------------------------------------------------
+        # 4. Apply Action Row
         # -------------------------------------------------------------
         self.actions_group = Adw.PreferencesGroup()
         self.add(self.actions_group)
@@ -146,15 +197,15 @@ class DisplaysPage(BasePage):
         self.actions_group.add(apply_row)
 
         # -------------------------------------------------------------
-        # 4. Advanced & Code Preview
+        # 5. Advanced & Code Preview
         # -------------------------------------------------------------
         self.advanced_group = Adw.PreferencesGroup()
-        self.advanced_group.set_title("Configuration")
+        self.advanced_group.set_title("Configuration Preview")
         self.add(self.advanced_group)
 
         self.preview_expander = Adw.ExpanderRow()
         self.preview_expander.set_title("View Monitor Configuration")
-        self.preview_expander.set_subtitle("Inspect generated Hyprland monitor syntax")
+        self.preview_expander.set_subtitle("Inspect generated Hyprland monitor and workspace syntax")
         self.preview_expander.set_icon_name("text-x-generic-symbolic")
 
         preview_scroller = Gtk.ScrolledWindow()
@@ -185,12 +236,13 @@ class DisplaysPage(BasePage):
             self.summary_row.set_subtitle("Ensure Hyprland is active")
             self.props_group.set_sensitive(False)
             self.actions_group.set_sensitive(False)
+            self.ws_group.set_sensitive(False)
             return
 
         self.props_group.set_sensitive(True)
         self.actions_group.set_sensitive(True)
+        self.ws_group.set_sensitive(True)
 
-        # Populate selector row
         self._updating_ui = True
         titles = []
         for m in self.monitors:
@@ -202,7 +254,6 @@ class DisplaysPage(BasePage):
         self.selector_row.set_model(model)
         self.selector_row.set_visible(len(self.monitors) > 1)
 
-        # Default to focused or first monitor
         focused_idx = 0
         for i, m in enumerate(self.monitors):
             if m.focused:
@@ -223,14 +274,26 @@ class DisplaysPage(BasePage):
     def _load_monitor_to_ui(self, mon: MonitorInfo):
         self._updating_ui = True
 
-        # Summary Row
         make_model = f"{mon.make} {mon.model}".strip() or mon.description or mon.name
         self.summary_row.set_title(f"{mon.name} — {make_model}")
         self.summary_row.set_subtitle(f"Active Mode: {mon.resolution_str} @ {mon.refresh_rate:.2f}Hz (Scale {mon.scale:.2f}x)")
 
-        # Enable switch
         self.enable_switch.set_active(not mon.disabled)
         self.enable_switch.set_sensitive(len(self.monitors) > 1)
+
+        # Mirroring
+        mirror_choices = ["None (Independent Display)"]
+        curr_mirror_idx = 0
+        for m in self.monitors:
+            if m.name != mon.name:
+                mirror_choices.append(f"Mirror {m.name}")
+                if mon.mirror_of == m.name:
+                    curr_mirror_idx = len(mirror_choices) - 1
+
+        mirror_model = Gtk.StringList.new(mirror_choices)
+        self.mirror_combo.set_model(mirror_model)
+        self.mirror_combo.set_selected(curr_mirror_idx)
+        self.mirror_combo.set_visible(len(self.monitors) > 1)
 
         # Resolutions and Rates
         res_map = mon.get_resolutions_and_rates()
@@ -242,7 +305,7 @@ class DisplaysPage(BasePage):
             temp_mon = MonitorInfo(
                 id=mon.id, name=mon.name, description="", make="", model="",
                 width=w, height=h, refresh_rate=60, x=0, y=0, scale=1, transform=0,
-                focused=False, dpms_status=True, vrr=False
+                focused=False, dpms_status=True, vrr=0
             )
             res_labels.append(temp_mon.resolution_str)
             if w == mon.width and h == mon.height:
@@ -252,12 +315,11 @@ class DisplaysPage(BasePage):
         self.res_combo.set_model(res_model)
         self.res_combo.set_selected(curr_res_idx)
 
-        # Populate Rates for selected resolution
         selected_res = sorted_resolutions[curr_res_idx] if sorted_resolutions else (mon.width, mon.height)
         self._populate_rates_for_res(selected_res, res_map, mon.refresh_rate)
 
         # Scale
-        scale_idx = len(SCALE_PRESETS) - 1 # Custom by default
+        scale_idx = len(SCALE_PRESETS) - 1
         for idx, (_, val) in enumerate(SCALE_PRESETS[:-1]):
             if abs(val - mon.scale) < 0.01:
                 scale_idx = idx
@@ -274,8 +336,25 @@ class DisplaysPage(BasePage):
                 break
         self.transform_combo.set_selected(t_idx)
 
+        # Bit Depth
+        bd_idx = 0
+        for idx, (_, val) in enumerate(BITDEPTH_OPTIONS):
+            if val == mon.bitdepth:
+                bd_idx = idx
+                break
+        self.bitdepth_combo.set_selected(bd_idx)
+
         # VRR
-        self.vrr_switch.set_active(mon.vrr)
+        vrr_idx = 0
+        for idx, (_, val) in enumerate(VRR_OPTIONS):
+            if val == mon.vrr:
+                vrr_idx = idx
+                break
+        self.vrr_combo.set_selected(vrr_idx)
+
+        # Workspaces
+        for num, btn in self._ws_buttons.items():
+            btn.set_active(num in mon.bound_workspaces)
 
         self._updating_ui = False
 
@@ -291,6 +370,21 @@ class DisplaysPage(BasePage):
                 curr_rate_idx = idx
                 break
         self.rate_combo.set_selected(curr_rate_idx)
+
+    def _on_ws_toggled(self, num: int, is_active: bool):
+        if self._updating_ui:
+            return
+        mon = self._get_current_monitor()
+        if not mon:
+            return
+
+        if is_active and num not in mon.bound_workspaces:
+            mon.bound_workspaces.append(num)
+            mon.bound_workspaces.sort()
+        elif not is_active and num in mon.bound_workspaces:
+            mon.bound_workspaces.remove(num)
+
+        self._update_preview()
 
     def _on_monitor_selected(self, combo, param):
         if self._updating_ui:
@@ -334,8 +428,16 @@ class DisplaysPage(BasePage):
         if not mon:
             return
 
-        # Update monitor object in memory
         mon.disabled = not self.enable_switch.get_active()
+
+        # Mirroring
+        mirror_idx = self.mirror_combo.get_selected()
+        if mirror_idx <= 0:
+            mon.mirror_of = "none"
+        else:
+            other_mons = [m.name for m in self.monitors if m.name != mon.name]
+            if mirror_idx - 1 < len(other_mons):
+                mon.mirror_of = other_mons[mirror_idx - 1]
 
         res_map = mon.get_resolutions_and_rates()
         sorted_resolutions = sorted(res_map.keys(), key=lambda r: (r[0] * r[1], r[0]), reverse=True)
@@ -360,7 +462,13 @@ class DisplaysPage(BasePage):
         if 0 <= t_idx < len(TRANSFORM_OPTIONS):
             mon.transform = TRANSFORM_OPTIONS[t_idx][1]
 
-        mon.vrr = self.vrr_switch.get_active()
+        bd_idx = self.bitdepth_combo.get_selected()
+        if 0 <= bd_idx < len(BITDEPTH_OPTIONS):
+            mon.bitdepth = BITDEPTH_OPTIONS[bd_idx][1]
+
+        vrr_idx = self.vrr_combo.get_selected()
+        if 0 <= vrr_idx < len(VRR_OPTIONS):
+            mon.vrr = VRR_OPTIONS[vrr_idx][1]
 
         self._update_preview()
 
@@ -376,14 +484,12 @@ class DisplaysPage(BasePage):
         if not mon:
             return
 
-        # Apply live settings
         success = self.display_mgr.apply_all(self.monitors)
         if not success:
             if self.toast_callback:
                 self.toast_callback("Failed to apply monitor settings via Hyprland IPC")
             return
 
-        # Start 15s Safety Revert Countdown Dialog
         self._start_revert_countdown()
 
     def _start_revert_countdown(self):
@@ -414,7 +520,7 @@ class DisplaysPage(BasePage):
                 self.display_mgr.save_config(self.monitors)
                 self._active_applied_snapshot = copy.deepcopy(self.monitors)
                 if self.toast_callback:
-                    self.toast_callback("Display settings saved successfully!")
+                    self.toast_callback("Display settings saved and applied successfully!")
                 self._load_monitor_to_ui(self.monitors[self.current_monitor_idx])
                 self._update_preview()
             else:
@@ -424,7 +530,6 @@ class DisplaysPage(BasePage):
         root = self.get_root()
         self._revert_dialog.choose(root, None, on_dialog_response)
 
-        # Start 1-second interval timer
         self._revert_timer_id = GLib.timeout_add_seconds(1, self._countdown_tick)
 
     def _countdown_tick(self) -> bool:
@@ -432,7 +537,6 @@ class DisplaysPage(BasePage):
         if self._revert_seconds_left <= 0:
             self._stop_revert_timer()
             if self._revert_dialog:
-                # Force closing triggers choose_finish with close_response ("revert")
                 self._revert_dialog.force_close()
             else:
                 self._revert_settings()

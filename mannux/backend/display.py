@@ -32,6 +32,18 @@ SCALE_PRESETS = [
     ("Custom...", -1.0),
 ]
 
+BITDEPTH_OPTIONS = [
+    ("8-bit (Standard Color)", 8),
+    ("10-bit (Deep Color / HDR)", 10),
+]
+
+VRR_OPTIONS = [
+    ("Off (Fixed Refresh Rate)", 0),
+    ("Always On (Desktop & Windows)", 1),
+    ("Fullscreen Only (Games)", 2),
+    ("Content-Aware / Smart VRR (Games & Video)", 3),
+]
+
 @dataclass
 class MonitorInfo:
     id: int
@@ -48,9 +60,11 @@ class MonitorInfo:
     transform: int
     focused: bool
     dpms_status: bool
-    vrr: bool
+    vrr: int = 0
+    bitdepth: int = 8
     disabled: bool = False
     mirror_of: str = "none"
+    bound_workspaces: List[int] = field(default_factory=list)
     available_modes: List[str] = field(default_factory=list)
 
     @property
@@ -86,9 +100,7 @@ class MonitorInfo:
 
     def get_resolutions_and_rates(self) -> Dict[Tuple[int, int], List[float]]:
         res_map: Dict[Tuple[int, int], List[float]] = {}
-        # Parse availableModes
         for mode in self.available_modes:
-            # Format e.g. "1920x1200@60.00Hz" or "1920x1080@144.00"
             try:
                 parts = mode.replace("Hz", "").split("@")
                 if len(parts) == 2:
@@ -102,14 +114,12 @@ class MonitorInfo:
             except Exception:
                 pass
 
-        # Ensure current mode is in the list
         curr = (self.width, self.height)
         if curr not in res_map:
             res_map[curr] = [self.refresh_rate]
         elif self.refresh_rate not in res_map[curr]:
             res_map[curr].append(self.refresh_rate)
 
-        # Sort rates descending
         for k in res_map:
             res_map[k].sort(reverse=True)
         return res_map
@@ -144,6 +154,14 @@ class DisplayManager:
             data = json.loads(res.stdout)
             monitors = []
             for item in data:
+                vrr_raw = item.get("vrr", False)
+                if isinstance(vrr_raw, bool):
+                    vrr_val = 1 if vrr_raw else 0
+                elif isinstance(vrr_raw, (int, float)):
+                    vrr_val = int(vrr_raw)
+                else:
+                    vrr_val = 0
+
                 mon = MonitorInfo(
                     id=item.get("id", 0),
                     name=item.get("name", "Unknown"),
@@ -159,7 +177,8 @@ class DisplayManager:
                     transform=int(item.get("transform", 0)),
                     focused=bool(item.get("focused", False)),
                     dpms_status=bool(item.get("dpmsStatus", True)),
-                    vrr=bool(item.get("vrr", False)),
+                    vrr=vrr_val,
+                    bitdepth=int(item.get("currentFormat", "8").replace("XRGB", "").replace("8888", "8") == "10" and 10 or 8),
                     disabled=bool(item.get("disabled", False)),
                     mirror_of=item.get("mirrorOf", "none") or "none",
                     available_modes=item.get("availableModes", []),
@@ -173,9 +192,10 @@ class DisplayManager:
     def build_lua_command(self, mon: MonitorInfo) -> str:
         if mon.disabled:
             return f"hl.monitor({{ output = '{mon.name}', mode = 'disable' }})"
+        if mon.mirror_of and mon.mirror_of != "none":
+            return f"hl.monitor({{ output = '{mon.name}', mode = 'preferred', position = 'auto', scale = {mon.scale}, mirror = '{mon.mirror_of}' }})"
         mode_str = f"{mon.width}x{mon.height}@{mon.refresh_rate:.2f}"
         pos_str = f"{mon.x}x{mon.y}"
-        vrr_val = 1 if mon.vrr else 0
         return (
             f"hl.monitor({{"
             f" output = '{mon.name}',"
@@ -183,29 +203,45 @@ class DisplayManager:
             f" position = '{pos_str}',"
             f" scale = {mon.scale},"
             f" transform = {mon.transform},"
-            f" vrr = {vrr_val}"
+            f" bitdepth = {mon.bitdepth},"
+            f" vrr = {mon.vrr}"
             f" }})"
         )
 
     def build_legacy_command(self, mon: MonitorInfo) -> str:
         if mon.disabled:
             return f"monitor = {mon.name}, disable"
+        if mon.mirror_of and mon.mirror_of != "none":
+            return f"monitor = {mon.name}, preferred, auto, {mon.scale}, mirror, {mon.mirror_of}"
         mode_str = f"{mon.width}x{mon.height}@{mon.refresh_rate:.2f}"
         pos_str = f"{mon.x}x{mon.y}"
-        vrr_str = f", vrr, {1 if mon.vrr else 0}"
-        return f"monitor = {mon.name}, {mode_str}, {pos_str}, {mon.scale}, transform, {mon.transform}{vrr_str}"
+        return f"monitor = {mon.name}, {mode_str}, {pos_str}, {mon.scale}, transform, {mon.transform}, bitdepth, {mon.bitdepth}, vrr, {mon.vrr}"
 
     def apply_monitor(self, mon: MonitorInfo) -> bool:
+        success = True
         if self.is_lua_mode():
             cmd = self.build_lua_command(mon)
             log.info(f"Applying monitor via Lua IPC: {cmd}")
             res = subprocess.run(["hyprctl", "eval", cmd], capture_output=True, text=True)
-            return res.returncode == 0
+            if res.returncode != 0:
+                success = False
+
+            # Apply workspace bindings
+            for ws in mon.bound_workspaces:
+                ws_cmd = f"hl.workspace_rule({{ workspace = '{ws}', monitor = '{mon.name}' }})"
+                subprocess.run(["hyprctl", "eval", ws_cmd], capture_output=True)
         else:
             cmd = self.build_legacy_command(mon).replace("monitor = ", "")
             log.info(f"Applying monitor via legacy keyword IPC: {cmd}")
             res = subprocess.run(["hyprctl", "keyword", "monitor", cmd], capture_output=True, text=True)
-            return res.returncode == 0
+            if res.returncode != 0:
+                success = False
+
+            for ws in mon.bound_workspaces:
+                ws_cmd = f"{ws}, monitor:{mon.name}"
+                subprocess.run(["hyprctl", "keyword", "workspace", ws_cmd], capture_output=True)
+
+        return success
 
     def apply_all(self, monitors: List[MonitorInfo]) -> bool:
         success = True
@@ -225,6 +261,9 @@ class DisplayManager:
         for mon in monitors:
             lines.append(f"-- Monitor: {mon.name} ({mon.description})")
             lines.append(self.build_lua_command(mon))
+            if mon.bound_workspaces:
+                for ws in mon.bound_workspaces:
+                    lines.append(f"hl.workspace_rule({{ workspace = '{ws}', monitor = '{mon.name}' }})")
             lines.append("")
         return "\n".join(lines)
 
@@ -239,13 +278,15 @@ class DisplayManager:
         for mon in monitors:
             lines.append(f"# Monitor: {mon.name} ({mon.description})")
             lines.append(self.build_legacy_command(mon))
+            if mon.bound_workspaces:
+                for ws in mon.bound_workspaces:
+                    lines.append(f"workspace = {ws}, monitor:{mon.name}")
             lines.append("")
         return "\n".join(lines)
 
     def save_config(self, monitors: List[MonitorInfo]) -> bool:
         saved_any = False
         try:
-            # 1. Lua configuration
             lua_dir = os.path.dirname(LUA_MONITORS_PATH)
             if self.is_lua_mode() or os.path.exists(LUA_MONITORS_PATH) or os.path.exists(lua_dir):
                 os.makedirs(lua_dir, exist_ok=True)
@@ -257,7 +298,6 @@ class DisplayManager:
                 log.info(f"Saved Lua monitor configuration to {LUA_MONITORS_PATH}")
                 saved_any = True
 
-            # 2. Legacy configuration (if not exclusively Lua, or if legacy conf exists)
             if not self.is_lua_mode() or os.path.exists(LEGACY_MONITORS_PATH) or os.path.exists(os.path.join(HYPR_DIR, "hyprland.conf")):
                 os.makedirs(HYPR_DIR, exist_ok=True)
                 if os.path.exists(LEGACY_MONITORS_PATH) and not os.path.exists(LEGACY_MONITORS_BAK):
