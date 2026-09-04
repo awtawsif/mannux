@@ -6,6 +6,7 @@ from mannux.backend.config import ConfigManager
 from mannux.backend.power import PowerManager
 from mannux.backend.hypridle import HypridleSync
 from mannux.pages.power_screen import PowerScreenPage
+from mannux.pages.display import DisplaysPage
 from mannux.pages.placeholder import PlaceholderPage
 from mannux.pages.about import AboutPage
 
@@ -38,14 +39,11 @@ class MainWindow(Adw.PreferencesWindow):
         )
         self.add(self.power_page)
 
-        # 2. Displays (Placeholder)
-        self.display_page = PlaceholderPage(
-            tag="displays",
-            title="Displays",
-            icon_name="video-display-symbolic",
-            description="Resolution, scaling, and multi-monitor layout management for Hyprland.",
+        # 2. Displays & Monitors Module
+        self.display_page = DisplaysPage(
             config_mgr=self.config_mgr,
-            power_mgr=self.power_mgr
+            power_mgr=self.power_mgr,
+            toast_callback=self.show_toast
         )
         self.add(self.display_page)
 

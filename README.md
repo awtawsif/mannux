@@ -6,6 +6,14 @@ A modern, fast GTK4 + Libadwaita settings application and CLI for Arch Linux run
 
 ## Features
 
+- **Displays & Monitors Management**:
+  - **Resolution & Refresh Rate**: Auto-populated available video modes per monitor.
+  - **Fractional & Integer Scaling**: 100%, 125%, 150%, 175%, 200%, or custom fractional values.
+  - **Orientation / Rotation**: Normal (0°), 90° (Portrait), 180° (Inverted), 270° (Portrait Flipped).
+  - **Variable Refresh Rate (VRR / FreeSync)**: One-click Adaptive Sync toggle.
+  - **Multi-Monitor Support**: Select and configure individual internal and external screens.
+  - **15-Second Safe Rollback Dialog**: Automatic rollback timer prevents black screen lockouts.
+  - **Hyprland Lua & Legacy IPC**: Dual support for `hyprctl eval (Lua)` and `hyprctl keyword (Legacy)`.
 - **Screen & Power Management**:
   - **Dual Power Profiles**: Separate, customizable timeouts for **On Battery** and **Plugged In (AC Power)**.
   - **Segmented Profile Switcher**: Interactive switcher with real-time active power state indicator.
@@ -21,6 +29,7 @@ A modern, fast GTK4 + Libadwaita settings application and CLI for Arch Linux run
   - Automatic synchronization and backup of `~/.config/hypr/hypridle.conf`.
   - Live syntax-highlighted code preview drawer for `hypridle.conf`.
 - **Scriptable Headless CLI (Waybar / Hotkeys)**:
+  - `mannux --monitors [--json]` to query display models, active modes, scales, and positions.
   - `mannux --inhibit-toggle` to toggle presentation mode without launching the GUI.
   - `mannux --status [--json]` for integration with status bars (Waybar, Eww, AGS).
   - `mannux --sync` for headless config regeneration and daemon reload.

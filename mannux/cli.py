@@ -24,6 +24,7 @@ def create_parser() -> argparse.ArgumentParser:
     group.add_argument("--inhibit-off", action="store_true", help="Disable idle inhibition and exit")
     group.add_argument("--sync", action="store_true", help="Regenerate hypridle.conf and reload daemon headlessly")
     group.add_argument("--status", action="store_true", help="Display current power, battery, and daemon status")
+    group.add_argument("--monitors", action="store_true", help="Display connected monitor details and active modes")
     group.add_argument("--json", action="store_true", help="Output status in machine-readable JSON format")
     return parser
 
@@ -100,6 +101,25 @@ def handle_cli_commands(args: argparse.Namespace) -> Optional[int]:
                 print(f"Battery Level      : {power.battery_percentage}% ({power.battery_state})")
             print(f"Keep Awake Mode    : {'ACTIVE (Inhibited)' if inhibit else 'Disabled'}")
             print(f"Hypridle Daemon    : {daemon.description}")
+        return 0
+
+    if args.monitors:
+        from mannux.backend.display import DisplayManager, asdict
+        display_mgr = DisplayManager.get_instance()
+        monitors = display_mgr.get_monitors()
+
+        if args.json:
+            print(json.dumps([asdict(m) for m in monitors], indent=2))
+        else:
+            print(f"=== Connected Displays ({len(monitors)}) ===")
+            for m in monitors:
+                focus_tag = " [Focused]" if m.focused else ""
+                status_tag = " [Disabled]" if m.disabled else " [Active]"
+                print(f"- {m.name}: {m.description or m.make + ' ' + m.model}{focus_tag}{status_tag}")
+                print(f"  Mode       : {m.width}x{m.height} @ {m.refresh_rate:.2f}Hz (Scale {m.scale:.2f}x)")
+                print(f"  Position   : ({m.x}, {m.y})")
+                print(f"  Transform  : {m.transform}")
+                print(f"  VRR        : {'ON' if m.vrr else 'OFF'}")
         return 0
 
     return None
